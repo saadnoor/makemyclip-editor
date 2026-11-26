@@ -68,6 +68,7 @@ Timeline (non-destructive composition — the source of truth for assembled edit
 
 UI:
   clip ui                           Start the local browser UI on http://127.0.0.1:5573.
+                                    LAN: MAKEMYCLIP_UI_HOST=0.0.0.0 MAKEMYCLIP_UI_TOKEN=<secret>.
                                     Renders the session log; click an op to play its output.
 
 MCP (drive the editor from Claude Desktop / any MCP client — no API key):
@@ -578,6 +579,11 @@ async function main(argv: string[]): Promise<void> {
   if (command === 'ui') {
     const server = await startUiServer();
     process.stdout.write(`MakeMyClip Editor UI: ${server.url}\n`);
+    if (process.env.MAKEMYCLIP_UI_TOKEN && !server.url.includes('127.0.0.1')) {
+      process.stdout.write(
+        `Open once on each device to sign in: ${server.url}/?token=${encodeURIComponent(process.env.MAKEMYCLIP_UI_TOKEN)}\n`,
+      );
+    }
     process.stdout.write('Press Ctrl+C to stop.\n');
     const stopAndExit = async () => {
       process.stdout.write('\nShutting down…\n');

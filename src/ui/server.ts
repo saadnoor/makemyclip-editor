@@ -1,4 +1,5 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
@@ -9,6 +10,7 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import getPort from 'get-port';
 import { type Context, Hono } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { csrf } from 'hono/csrf';
 import open from 'open';
 import { ZodError, z } from 'zod';
@@ -116,6 +118,15 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
 
 /** Any port is fine: the Vite dev proxy forwards the browser's own Host
  *  (`localhost:5173`). Only the name matters for DNS rebinding. */
+function isAllowedHost(host: string | undefined, allowed: Set<string>): boolean {
+  if (!host) return false;
+  try {
+    return allowed.has(new URL(`http://${host}`).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 function isLoopbackHost(host: string | undefined): boolean {
   if (!host) return false;
   try {
@@ -125,9 +136,42 @@ function isLoopbackHost(host: string | undefined): boolean {
   }
 }
 
+const AUTH_COOKIE = 'mmc_ui_auth';
+const MIN_TOKEN_LENGTH = 16;
+
+function sha256(value: string): Buffer {
+  return createHash('sha256').update(value).digest();
+}
+
+/** Constant-time check of a presented secret against the expected digest. */
+function matchesDigest(presented: string | undefined, expected: Buffer): boolean {
+  if (!presented) return false;
+  return timingSafeEqual(sha256(presented), expected);
+}
+
+/** First non-internal IPv4 address, for printing a reachable URL when bound to 0.0.0.0. */
+function firstLanAddress(): string | null {
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs ?? []) {
+      if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+    }
+  }
+  return null;
+}
+
 export interface UiServerOptions {
   /** Preferred port. Auto-picks a free port if this one is taken. */
   port?: number;
+  /**
+   * Address to bind. Defaults to MAKEMYCLIP_UI_HOST, else 127.0.0.1. Any
+   * non-loopback address (e.g. 0.0.0.0 for the LAN) requires a token.
+   */
+  host?: string;
+  /**
+   * Shared secret for LAN access. Defaults to MAKEMYCLIP_UI_TOKEN. Open
+   * `/?token=<token>` once per device; the browser then keeps an HttpOnly cookie.
+   */
+  token?: string;
   /** If true, open the system browser after the server starts. */
   openBrowser?: boolean;
 }
@@ -164,7 +208,55 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   const preferredPort = options.port ?? 5573;
   const port = await getPort({ port: [preferredPort, preferredPort + 1, preferredPort + 2] });
 
+  const bindHost = options.host ?? process.env.MAKEMYCLIP_UI_HOST ?? '127.0.0.1';
+  const lanMode = !LOOPBACK_HOSTNAMES.has(bindHost);
+  const token = options.token ?? process.env.MAKEMYCLIP_UI_TOKEN;
+  if (lanMode && (!token || token.length < MIN_TOKEN_LENGTH)) {
+    throw new Error(
+      `clip ui: binding to ${bindHost} exposes the editor to the network; set MAKEMYCLIP_UI_TOKEN to a secret of at least ${MIN_TOKEN_LENGTH} characters.`,
+    );
+  }
+  const tokenDigest = token ? sha256(token) : null;
+  // The cookie holds a digest, never the token itself.
+  const cookieValue = tokenDigest ? sha256(tokenDigest.toString('hex')).toString('hex') : null;
+  const cookieDigest = cookieValue ? sha256(cookieValue) : null;
+  const allowedHosts = new Set(
+    (process.env.MAKEMYCLIP_UI_ALLOWED_HOSTS ?? '')
+      .split(',')
+      .map((h) => h.trim().toLowerCase())
+      .filter(Boolean),
+  );
+
   const app = new Hono();
+
+  // Token gate (only when a token is configured). `/?token=…` sets a
+  // SameSite=Strict HttpOnly cookie and redirects to strip the token from the
+  // URL; after that every request (pages, API, media) must carry the cookie or
+  // an `Authorization: Bearer <token>` header. A DNS-rebinding page is a
+  // different site, so the browser never sends it the cookie.
+  if (tokenDigest && cookieValue && cookieDigest) {
+    app.use('*', async (c, next) => {
+      const url = new URL(c.req.url);
+      const queryToken = url.searchParams.get('token');
+      if (queryToken !== null) {
+        if (!matchesDigest(queryToken, tokenDigest)) return c.text('Wrong token.', 401);
+        setCookie(c, AUTH_COOKIE, cookieValue, {
+          httpOnly: true,
+          sameSite: 'Strict',
+          path: '/',
+          maxAge: 60 * 60 * 24 * 90,
+        });
+        url.searchParams.delete('token');
+        return c.redirect(`${url.pathname}${url.search}`, 303);
+      }
+      const bearer = c.req.header('authorization')?.match(/^Bearer (.+)$/)?.[1];
+      if (matchesDigest(getCookie(c, AUTH_COOKIE), cookieDigest) || matchesDigest(bearer, tokenDigest)) {
+        await next();
+        return;
+      }
+      return c.text('Unauthorized. Open this editor with the link that includes ?token=…', 401);
+    });
+  }
 
   // ─── API ────────────────────────────────────────────────────────────
 
@@ -174,8 +266,19 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   // (text/plain, form, or no Content-Type), which the JSON-parsing handlers
   // would otherwise accept.
   app.use('/api/*', async (c, next) => {
-    if (!isLoopbackHost(c.req.header('host'))) {
-      return c.json({ error: 'Forbidden: clip ui only answers to 127.0.0.1 or localhost.' }, 403);
+    const host = c.req.header('host');
+    const hostAllowed = lanMode
+      ? allowedHosts.size === 0 || isLoopbackHost(host) || isAllowedHost(host, allowedHosts)
+      : isLoopbackHost(host);
+    if (!hostAllowed) {
+      return c.json(
+        {
+          error: lanMode
+            ? 'Forbidden: host not in MAKEMYCLIP_UI_ALLOWED_HOSTS.'
+            : 'Forbidden: clip ui only answers to 127.0.0.1 or localhost.',
+        },
+        403,
+      );
     }
     await next();
   });
@@ -881,10 +984,12 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
     );
   }
 
-  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port });
-  const url = `http://127.0.0.1:${port}`;
+  const server = serve({ fetch: app.fetch, hostname: bindHost, port });
+  const displayHost =
+    bindHost === '0.0.0.0' || bindHost === '::' ? (firstLanAddress() ?? bindHost) : bindHost;
+  const url = `http://${displayHost.includes(':') ? `[${displayHost}]` : displayHost}:${port}`;
 
-  if (options.openBrowser !== false) {
+  if (options.openBrowser !== false && !lanMode) {
     // Don't block server startup on browser-open failures (e.g. headless env).
     open(url).catch(() => undefined);
   }
