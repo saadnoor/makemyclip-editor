@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { networkInterfaces } from 'node:os';
 import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -205,9 +205,6 @@ async function resolveOpEntry(
 }
 
 export async function startUiServer(options: UiServerOptions = {}): Promise<UiServer> {
-  const preferredPort = options.port ?? 5573;
-  const port = await getPort({ port: [preferredPort, preferredPort + 1, preferredPort + 2] });
-
   const bindHost = options.host ?? process.env.MAKEMYCLIP_UI_HOST ?? '127.0.0.1';
   const lanMode = !LOOPBACK_HOSTNAMES.has(bindHost);
   const token = options.token ?? process.env.MAKEMYCLIP_UI_TOKEN;
@@ -226,6 +223,9 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
       .map((h) => h.trim().toLowerCase())
       .filter(Boolean),
   );
+
+  const preferredPort = options.port ?? 5573;
+  const port = await getPort({ port: [preferredPort, preferredPort + 1, preferredPort + 2] });
 
   const app = new Hono();
 
@@ -250,7 +250,10 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
         return c.redirect(`${url.pathname}${url.search}`, 303);
       }
       const bearer = c.req.header('authorization')?.match(/^Bearer (.+)$/)?.[1];
-      if (matchesDigest(getCookie(c, AUTH_COOKIE), cookieDigest) || matchesDigest(bearer, tokenDigest)) {
+      if (
+        matchesDigest(getCookie(c, AUTH_COOKIE), cookieDigest) ||
+        matchesDigest(bearer, tokenDigest)
+      ) {
         await next();
         return;
       }
