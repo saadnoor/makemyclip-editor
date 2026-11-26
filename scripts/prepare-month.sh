@@ -85,14 +85,29 @@ proxy_cpu() { # in out
     -movflags +faststart -f mp4 "$2"
 }
 
-n=0
+# The manifest lists every clip up front, so the 4K conform and the Mac worker
+# can read it while proxies are still being made.
+rm -f "$OUT/cpu-pending.tsv"
 while IFS=$'\t' read -r stamp dur codec pix f; do
-  n=$((n + 1))
   base=$(basename "$f"); base=${base%.*}
   proxy="${stamp}_${base// /_}.mp4"
   printf '%s\t%s\t%s\t%s\n' "$proxy" "$stamp" "$dur" "$f" >> "$MANIFEST"
-  if [[ -s "$OUT/$proxy" ]]; then continue; fi
-  part="$OUT/.$proxy.part"
+  # Clips only a CPU can decode are shared with the Mac worker (mac-proxy-worker.sh).
+  can_qsv "$codec" "$pix" || printf '%s\t%s\n' "$proxy" "$f" >> "$OUT/cpu-pending.tsv"
+done < "$LIST"
+
+# A clip is claimed by creating .claims/<proxy> (mkdir is atomic). A claim older
+# than CLAIM_TTL minutes is from a worker that died, and is taken over.
+CLAIMS="$OUT/.claims"
+CLAIM_TTL=${CLAIM_TTL:-180}
+mkdir -p "$CLAIMS"
+claim() {
+  find "$CLAIMS" -maxdepth 1 -mindepth 1 -name "$1" -mmin +"$CLAIM_TTL" -exec rm -rf {} + 2>/dev/null
+  mkdir "$CLAIMS/$1" 2>/dev/null
+}
+
+make_proxy() { # n proxy codec pix original
+  local n=$1 proxy=$2 codec=$3 pix=$4 f=$5 how part="$OUT/.$2.nas.part"
   if can_qsv "$codec" "$pix" && proxy_qsv "$f" "$part"; then
     how=gpu
   elif proxy_cpu "$f" "$part"; then
@@ -100,10 +115,25 @@ while IFS=$'\t' read -r stamp dur codec pix f; do
   else
     log "[$n/$total] FAILED: $f"
     rm -f "$part"
-    continue
+    return
   fi
   mv "$part" "$OUT/$proxy"
   log "[$n/$total] $how $codec/$pix $proxy"
-done < "$LIST"
+}
+
+# GPU-friendly clips first; the slow CPU ones last, so the Mac worker has time
+# to take some of them.
+for pass in gpu cpu; do
+  n=0
+  while IFS=$'\t' read -r stamp _dur codec pix f; do
+    n=$((n + 1))
+    if can_qsv "$codec" "$pix"; then [[ $pass == gpu ]] || continue; else [[ $pass == cpu ]] || continue; fi
+    base=$(basename "$f"); base=${base%.*}
+    proxy="${stamp}_${base// /_}.mp4"
+    [[ -s "$OUT/$proxy" ]] && continue
+    claim "$proxy" || continue
+    make_proxy "$n" "$proxy" "$codec" "$pix" "$f"
+  done < "$LIST"
+done
 
 log "done: $MONTH ($total clips) -> $OUT"

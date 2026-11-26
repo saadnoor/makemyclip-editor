@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs mac-proxy-worker.sh every 10 minutes. Install:
+    sed "s|__SCRIPT__|$PWD/scripts/mac-proxy-worker.sh|; s|__HOME__|$HOME|" \
+      scripts/mac-proxy-worker.plist > ~/Library/LaunchAgents/com.makemyclip.mac-proxy-worker.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.makemyclip.mac-proxy-worker.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.makemyclip.mac-proxy-worker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__SCRIPT__</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/mac-proxy-worker.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/mac-proxy-worker.log</string>
+</dict>
+</plist>
