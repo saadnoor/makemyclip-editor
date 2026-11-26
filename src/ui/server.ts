@@ -14,7 +14,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import { csrf } from 'hono/csrf';
 import open from 'open';
 import { ZodError, z } from 'zod';
-import { buildThumbnailArgs } from '../ffmpeg/args/preview.js';
+import { buildFilmstripArgs, buildThumbnailArgs } from '../ffmpeg/args/preview.js';
 import { probe } from '../ffmpeg/probe.js';
 import { runFfmpeg } from '../ffmpeg/run.js';
 import { appendOp, readSession, SessionCorruptError, snapshotsDir } from '../session/store.js';
@@ -43,7 +43,7 @@ import {
   InterchangeFormatSchema,
   interchangeExtension,
 } from '../timeline/interchange.js';
-import { buildMediaMap } from '../timeline/media-registry.js';
+import { buildMediaMap, buildMediaRefs } from '../timeline/media-registry.js';
 import { CompositionOpError } from '../timeline/ops.js';
 import { ReframeError } from '../timeline/reframe.js';
 import { exportTimelines, runPlan } from '../timeline/run-plan.js';
@@ -154,6 +154,28 @@ export function parseRange(
   if (start >= size || start > end) return 'invalid';
   return [start, end];
 }
+
+/**
+ * Run at most `limit` tasks at once. A screen of filmstrips asks for hundreds of
+ * images together; unbounded, each spawns FFmpeg and starves playback.
+ */
+function limiter(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const queue: (() => void)[] = [];
+  return async (task) => {
+    if (running >= limit) await new Promise<void>((go) => queue.push(go));
+    running++;
+    try {
+      return await task();
+    } finally {
+      running--;
+      queue.shift()?.();
+    }
+  };
+}
+
+const STRIP_FRAMES = 12;
+const STRIP_HEIGHT = 54;
 
 function isAllowedHost(host: string | undefined, allowed: Set<string>): boolean {
   if (!host) return false;
@@ -552,6 +574,49 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
     return c.body(body, range ? 206 : 200, headers);
   });
 
+  const stills = limiter(2);
+
+  /**
+   * GET /api/media/strip?mediaId= — a clip's filmstrip as one JPEG of
+   * STRIP_FRAMES stills, cached under the workspace. The timeline shows it as a
+   * repeating background, so a whole month costs one small image per clip.
+   */
+  app.get('/api/media/strip', async (c) => {
+    const mediaId = c.req.query('mediaId') ?? '';
+    if (!mediaId) return c.json({ error: 'mediaId required' }, 400);
+    const dir = resolve(getWorkspace(), '.thumbs');
+    const out = resolve(dir, `strip-${mediaId.replace(/[^\w.-]/g, '_')}.jpg`);
+    const serve = async () =>
+      c.body(await readFile(out), 200, {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      });
+    if (existsSync(out)) return serve();
+    const ref = (await buildMediaRefs()).get(mediaId as MediaId);
+    const info = (await buildMediaMap()).get(mediaId as MediaId);
+    if (!ref || !info) return c.json({ error: `Unknown media: ${mediaId}` }, 404);
+    try {
+      await mkdir(dir, { recursive: true });
+      const tmp = resolve(dir, `strip-${randomBytes(4).toString('hex')}.tmp.jpg`);
+      await stills(() =>
+        runFfmpeg(
+          buildFilmstripArgs({
+            input: info.path,
+            output: tmp,
+            durationSec: ref.durationSec,
+            frames: STRIP_FRAMES,
+            height: STRIP_HEIGHT,
+          }),
+        ),
+      );
+      await rename(tmp, out);
+      return serve();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 503);
+    }
+  });
+
   app.get('/api/media/thumb', async (c) => {
     const mediaId = c.req.query('mediaId') ?? '';
     const t = Number(c.req.query('t') ?? '0');
@@ -579,7 +644,9 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
       // Generate to a unique temp path then atomically rename, so concurrent
       // requests for the same thumb never serve a half-written file.
       const tmp = resolve(thumbsDir, `${safeKey}.${randomBytes(4).toString('hex')}.tmp.jpg`);
-      await runFfmpeg(buildThumbnailArgs({ input: info.path, output: tmp, atSec: t, height: h }));
+      await stills(() =>
+        runFfmpeg(buildThumbnailArgs({ input: info.path, output: tmp, atSec: t, height: h })),
+      );
       await rename(tmp, out);
       return serve();
     } catch (err) {

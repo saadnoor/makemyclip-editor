@@ -3,13 +3,11 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { withTimeline } from '../lib/timelines.js';
 import { applyTimelineVerbs, type Verb } from '../lib/verbs.js';
 import type { Composition } from '../types.js';
-import { editPoints, type Segment, segmentAt, segmentsOf, sourceTime } from './segments.js';
+import { editPoints, type Segment, segmentAt, segmentsOf } from './segments.js';
 import { usePlayer } from './usePlayer.js';
 import './cut.css';
 
 const MONTH_ID = /^\d{4}-\d{2}$/;
-const THUMB_H = 54;
-const THUMB_W = 96;
 const MIN_PPS = 0.05;
 const MAX_PPS = 400;
 const POLL_MS = 3000;
@@ -58,6 +56,14 @@ export function CutApp() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const [tlHeight, setTlHeight] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem('cut.tlHeight')) || 170;
+    } catch {
+      return 170;
+    }
+  });
+  const viewerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch('/api/timelines')
@@ -233,8 +239,29 @@ export function CutApp() {
         ) : null}
       </header>
 
-      <div className="cut-viewer" onClick={player.toggle} onKeyDown={undefined} role="presentation">
+      {/* Tapping the picture toggles playback; the Play button is the accessible control. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: duplicate of the Play button. */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: Space is handled globally. */}
+      <div className="cut-viewer" ref={viewerRef} onClick={player.toggle}>
+        <button
+          type="button"
+          className="cut-fs"
+          title="Fullscreen"
+          onClick={(e) => {
+            e.stopPropagation();
+            const box = viewerRef.current;
+            const vid = player.videoRefs[player.active].current as
+              | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
+              | null;
+            if (document.fullscreenElement) void document.exitFullscreen();
+            else if (box?.requestFullscreen) void box.requestFullscreen();
+            else vid?.webkitEnterFullscreen?.();
+          }}
+        >
+          ⛶
+        </button>
         {player.videoRefs.map((ref, i) => (
+          // biome-ignore lint/a11y/useMediaCaption: personal footage has no caption tracks.
           <video
             // biome-ignore lint/suspicious/noArrayIndexKey: exactly two fixed players.
             key={i}
@@ -307,7 +334,44 @@ export function CutApp() {
         </button>
       </div>
 
+      {/* biome-ignore lint/a11y/useSemanticElements: <hr> can't hold a drag handle. */}
+      <div
+        className="cut-split"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Drag to resize the timeline"
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const startY = e.clientY;
+          const startH = tlHeight;
+          const move = (ev: PointerEvent) => {
+            const h = Math.min(
+              window.innerHeight - 160,
+              Math.max(90, startH + startY - ev.clientY),
+            );
+            setTlHeight(h);
+          };
+          const up = () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            setTlHeight((h) => {
+              try {
+                localStorage.setItem('cut.tlHeight', String(h));
+              } catch {
+                // Private mode: the size just isn't remembered.
+              }
+              return h;
+            });
+          };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up);
+        }}
+      >
+        <span />
+      </div>
+
       <Timeline
+        height={tlHeight}
         segs={segs}
         time={player.time}
         playing={player.playing}
@@ -323,6 +387,7 @@ export function CutApp() {
 }
 
 function Timeline({
+  height,
   segs,
   time,
   playing,
@@ -330,6 +395,7 @@ function Timeline({
   onSelect,
   onScrub,
 }: {
+  height: number;
   segs: Segment[];
   time: number;
   playing: boolean;
@@ -353,9 +419,9 @@ function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  // Start zoomed to fit the whole month on screen.
+  // Start where clips are readable: about 3 minutes across the screen.
   useEffect(() => {
-    if (pps === null && total > 0) setPps(Math.max(MIN_PPS, (width * 0.9) / total));
+    if (pps === null && total > 0) setPps(Math.max(MIN_PPS, width / 180));
   }, [pps, total, width]);
   const zoom = pps ?? 1;
   const pad = width / 2;
@@ -400,8 +466,18 @@ function Timeline({
   for (let t = 0; t <= total + step; t += step) ticks.push(t);
 
   return (
-    <div className="cut-tl">
+    <div className="cut-tl" style={{ height }}>
       <div className="cut-zoom">
+        <input
+          type="range"
+          className="cut-zoom-slider"
+          aria-label="Timeline zoom"
+          min={Math.log(MIN_PPS)}
+          max={Math.log(MAX_PPS)}
+          step={0.01}
+          value={Math.log(zoom)}
+          onChange={(e) => setPps(Math.exp(Number(e.target.value)))}
+        />
         <button type="button" onClick={() => setPps(Math.max(MIN_PPS, zoom / 2))} title="Zoom out">
           −
         </button>
@@ -472,6 +548,47 @@ function Timeline({
   );
 }
 
+/**
+ * Load strip images a few at a time. The browser allows only ~6 connections to
+ * the NAS; if hundreds of strips queue up, the video stream waits behind them.
+ */
+const STRIP_SLOTS = 2;
+let stripsInFlight = 0;
+const stripQueue: (() => void)[] = [];
+const loadedStrips = new Set<string>();
+
+function loadStrip(url: string): Promise<void> {
+  if (loadedStrips.has(url)) return Promise.resolve();
+  return new Promise((done) => {
+    const start = () => {
+      stripsInFlight++;
+      const img = new Image();
+      img.onload = img.onerror = () => {
+        stripsInFlight--;
+        loadedStrips.add(url);
+        stripQueue.shift()?.();
+        done();
+      };
+      img.src = url;
+    };
+    if (stripsInFlight < STRIP_SLOTS) start();
+    else stripQueue.push(start);
+  });
+}
+
+function useStrip(mediaId: string): string | null {
+  const url = `/api/media/strip?mediaId=${encodeURIComponent(mediaId)}`;
+  const [ready, setReady] = useState(() => loadedStrips.has(url));
+  useEffect(() => {
+    let alive = true;
+    void loadStrip(url).then(() => alive && setReady(true));
+    return () => {
+      alive = false;
+    };
+  }, [url]);
+  return ready ? url : null;
+}
+
 const ClipBlock = memo(function ClipBlock({
   seg,
   left,
@@ -485,35 +602,20 @@ const ClipBlock = memo(function ClipBlock({
   selected: boolean;
   onSelect: (id: string | null) => void;
 }) {
-  const n = Math.max(1, Math.min(30, Math.ceil(width / THUMB_W)));
-  const frames: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const tl = seg.start + ((i + 0.5) / n) * (seg.end - seg.start);
-    frames.push(Math.round(sourceTime(seg, tl) * 2) / 2);
-  }
+  const strip = useStrip(seg.mediaId);
   return (
     <button
       type="button"
       className={`cut-clip${selected ? ' is-selected' : ''}`}
-      style={{ left, width: Math.max(2, width - 1) }}
+      style={{
+        left,
+        width: Math.max(2, width - 1),
+        backgroundImage: strip ? `url("${strip}")` : undefined,
+      }}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(selected ? null : seg.clipId);
       }}
-    >
-      {width > 6
-        ? frames.map((t, i) => (
-            <img
-              // biome-ignore lint/suspicious/noArrayIndexKey: frame slots are positional.
-              key={i}
-              loading="lazy"
-              alt=""
-              draggable={false}
-              src={`/api/media/thumb?mediaId=${encodeURIComponent(seg.mediaId)}&t=${t.toFixed(2)}&h=${THUMB_H}`}
-              style={{ width: width / n }}
-            />
-          ))
-        : null}
-    </button>
+    />
   );
 });

@@ -48,3 +48,41 @@ export function buildThumbnailArgs({ input, output, atSec, height }: ThumbnailAr
     output,
   ];
 }
+
+export interface FilmstripArgs {
+  input: string;
+  output: string;
+  durationSec: number;
+  frames: number;
+  height: number;
+}
+
+/**
+ * One JPEG of `frames` stills spread evenly across the source, side by side: a
+ * clip's whole filmstrip in a single small file. Decodes keyframes only, which
+ * is plenty for a strip and many times faster than a full decode.
+ */
+export function buildFilmstripArgs({
+  input,
+  output,
+  durationSec,
+  frames,
+  height,
+}: FilmstripArgs): string[] {
+  const rate = frames / Math.max(durationSec, 0.1);
+  return [
+    '-y',
+    '-skip_frame',
+    'nokey',
+    '-i',
+    input,
+    '-vf',
+    `fps=${rate.toFixed(6)},scale=-2:${height},tile=${frames}x1`,
+    '-frames:v',
+    '1',
+    '-q:v',
+    '5',
+    '-an',
+    output,
+  ];
+}
