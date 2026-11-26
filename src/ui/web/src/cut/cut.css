@@ -1,0 +1,244 @@
+.cut {
+  --cut-bg: #111;
+  --cut-panel: #1c1c1e;
+  --cut-line: #2c2c2e;
+  --cut-text: #f2f2f7;
+  --cut-dim: #8e8e93;
+  --cut-accent: #ffd60a;
+  --cut-clip: #2f6f5e;
+  --cut-danger: #ff453a;
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--cut-bg);
+  color: var(--cut-text);
+  font:
+    15px / 1.3 -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    system-ui,
+    sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.cut button {
+  font: inherit;
+  color: inherit;
+  background: var(--cut-panel);
+  border: 1px solid var(--cut-line);
+  border-radius: 10px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+.cut button:active {
+  background: #3a3a3c;
+}
+.cut button:disabled {
+  opacity: 0.4;
+}
+
+.cut-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: max(8px, env(safe-area-inset-top)) 16px 8px;
+  border-bottom: 1px solid var(--cut-line);
+  flex-wrap: wrap;
+}
+.cut-month {
+  font: inherit;
+  font-weight: 600;
+  color: var(--cut-text);
+  background: var(--cut-panel);
+  border: 1px solid var(--cut-line);
+  border-radius: 10px;
+  min-height: 40px;
+  padding: 0 10px;
+}
+.cut-clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 17px;
+  font-weight: 600;
+}
+.cut-dim {
+  color: var(--cut-dim);
+  font-weight: 400;
+}
+.cut button.cut-error {
+  border-color: var(--cut-danger);
+  color: var(--cut-danger);
+  min-height: 32px;
+  font-size: 13px;
+}
+
+.cut-viewer {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 160px;
+  background: #000;
+  overflow: hidden;
+}
+.cut-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.cut-msg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--cut-dim);
+}
+.cut-clipname {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+}
+
+.cut-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--cut-line);
+  border-bottom: 1px solid var(--cut-line);
+  overflow-x: auto;
+}
+.cut-spacer {
+  flex: 1 1 0;
+  min-width: 4px;
+}
+.cut button.cut-play {
+  min-width: 64px;
+  font-size: 18px;
+  background: var(--cut-text);
+  color: #000;
+}
+.cut button.cut-blade {
+  border-color: var(--cut-accent);
+  color: var(--cut-accent);
+}
+.cut button.cut-delete {
+  border-color: var(--cut-danger);
+  color: var(--cut-danger);
+}
+
+.cut-tl {
+  position: relative;
+  flex: 0 0 auto;
+  height: clamp(130px, 24vh, 220px);
+  background: var(--cut-bg);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.cut-zoom {
+  position: absolute;
+  right: 10px;
+  top: 4px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+.cut .cut-zoom button {
+  min-width: 36px;
+  min-height: 30px;
+  padding: 0;
+  opacity: 0.85;
+}
+.cut-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  touch-action: pan-x;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.cut-scroll::-webkit-scrollbar {
+  display: none;
+}
+.cut-inner {
+  position: relative;
+  height: 100%;
+}
+.cut-ruler {
+  position: relative;
+  height: 34px;
+}
+.cut-tick {
+  position: absolute;
+  top: 10px;
+  font-size: 11px;
+  color: var(--cut-dim);
+  font-variant-numeric: tabular-nums;
+  border-left: 1px solid var(--cut-line);
+  padding-left: 4px;
+}
+.cut-lane {
+  position: relative;
+  height: calc(100% - 46px);
+  margin-top: 4px;
+}
+.cut button.cut-clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  border-radius: 6px;
+  background: var(--cut-clip);
+  overflow: hidden;
+  display: flex;
+}
+.cut-clip img {
+  height: 100%;
+  object-fit: cover;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+.cut button.cut-clip.is-selected {
+  border: 3px solid var(--cut-accent);
+  z-index: 2;
+}
+.cut-playhead {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--cut-accent);
+  pointer-events: none;
+  z-index: 4;
+}
+.cut-playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -6px;
+  border: 7px solid transparent;
+  border-top-color: var(--cut-accent);
+}
+
+@media (max-width: 600px) {
+  .cut-count {
+    display: none;
+  }
+  .cut-tools {
+    gap: 6px;
+  }
+}

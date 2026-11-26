@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { createWriteStream, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
@@ -118,6 +118,43 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost']);
 
 /** Any port is fine: the Vite dev proxy forwards the browser's own Host
  *  (`localhost:5173`). Only the name matters for DNS rebinding. */
+const MEDIA_TYPES: Record<string, string> = {
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  mkv: 'video/x-matroska',
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  wav: 'audio/wav',
+};
+
+/**
+ * Parse a single-range `Range: bytes=a-b` header. Returns null for no (or a
+ * multi-range) header, which is answered with the whole file, and 'invalid'
+ * for a range outside the file.
+ */
+export function parseRange(
+  header: string | undefined,
+  size: number,
+): [number, number] | null | 'invalid' {
+  const m = header?.match(/^bytes=(\d*)-(\d*)$/);
+  if (!m) return null;
+  const [, a = '', b = ''] = m;
+  if (a === '' && b === '') return 'invalid';
+  let start: number;
+  let end: number;
+  if (a === '') {
+    start = Math.max(0, size - Number(b));
+    end = size - 1;
+  } else {
+    start = Number(a);
+    end = b === '' ? size - 1 : Math.min(Number(b), size - 1);
+  }
+  if (start >= size || start > end) return 'invalid';
+  return [start, end];
+}
+
 function isAllowedHost(host: string | undefined, allowed: Set<string>): boolean {
   if (!host) return false;
   try {
@@ -486,6 +523,35 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
    * clip shows is generated once and then served from disk. Cheap: one fast
    * input-seek frame extract per cache miss.
    */
+  /**
+   * GET /api/media/stream?mediaId= — the SOURCE media file for live playback in a
+   * <video> element. Honours HTTP Range (Safari won't play video without 206
+   * Partial Content), so the browser fetches only the bytes it plays or seeks to.
+   */
+  app.get('/api/media/stream', async (c) => {
+    const mediaId = c.req.query('mediaId') ?? '';
+    const info = (await buildMediaMap()).get(mediaId as MediaId);
+    if (!info) return c.json({ error: `Unknown media: ${mediaId}` }, 404);
+    const path = resolveInWorkspace(info.path);
+    const { size } = await stat(path);
+    const type =
+      MEDIA_TYPES[path.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
+    const range = parseRange(c.req.header('range'), size);
+    if (range === 'invalid') {
+      return c.body(null, 416, { 'Content-Range': `bytes */${size}` });
+    }
+    const [start, end] = range ?? [0, size - 1];
+    const body = Readable.toWeb(createReadStream(path, { start, end })) as ReadableStream;
+    const headers: Record<string, string> = {
+      'Content-Type': type,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': String(end - start + 1),
+      'Cache-Control': 'private, max-age=3600',
+    };
+    if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+    return c.body(body, range ? 206 : 200, headers);
+  });
+
   app.get('/api/media/thumb', async (c) => {
     const mediaId = c.req.query('mediaId') ?? '';
     const t = Number(c.req.query('t') ?? '0');
