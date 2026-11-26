@@ -9,6 +9,11 @@
 # Proxies are named <capture time>_<original name>.mp4 so they sort in
 # shooting order. manifest.tsv maps each proxy back to its original, which
 # the final 4K conform reads. Re-running skips proxies that already exist.
+#
+# Uses the Intel GPU (QSV) for 4:2:0 H.264/HEVC sources when /dev/dri is
+# usable (see run-prepare-month.sh, which runs this inside the Jellyfin image
+# for its QSV-enabled FFmpeg) and falls back to the CPU otherwise — Sony's
+# H.264 4:2:2 10-bit has no hardware decoder on Intel.
 set -euo pipefail
 
 SRC=${1:?source month folder}
@@ -30,7 +35,7 @@ find "$SRC" \
   while IFS= read -r -d '' f; do
     # Skip files ffprobe can't read (broken FCP aliases, partial copies).
     info=$(ffprobe -v error -select_streams v:0 \
-      -show_entries stream=width,height:format=duration:format_tags=creation_time \
+      -show_entries stream=codec_name,pix_fmt:format=duration:format_tags=creation_time \
       -of default=nw=1 "$f" </dev/null 2>/dev/null) || continue
     dur=$(sed -n 's/^duration=//p' <<<"$info" | head -1)
     [[ -z "$dur" || "$dur" == "N/A" ]] && continue
@@ -39,30 +44,66 @@ find "$SRC" \
       ct=$(date -u -d "@$(stat -c %Y "$f")" '+%Y-%m-%dT%H:%M:%S')
     fi
     stamp=$(date -u -d "$ct" '+%Y%m%d-%H%M%S' 2>/dev/null || echo 00000000-000000)
-    printf '%s\t%s\t%s\n' "$stamp" "$dur" "$f"
+    codec=$(sed -n 's/^codec_name=//p' <<<"$info" | head -1)
+    pix=$(sed -n 's/^pix_fmt=//p' <<<"$info" | head -1)
+    printf '%s\t%s\t%s\t%s\t%s\n' "$stamp" "$dur" "$codec" "$pix" "$f"
   done | sort > "$LIST"
 
 total=$(wc -l < "$LIST")
 log "found $total clips in $SRC"
 printf 'proxy\tcapture_utc\tduration\toriginal\n' > "$MANIFEST"
 
-# 2. Make proxies (CPU decode; one at a time so the NAS stays responsive).
+# 2. Make proxies, one at a time so the NAS stays responsive.
+HAS_QSV=0
+[[ -r /dev/dri/renderD128 && -w /dev/dri/renderD128 ]] && HAS_QSV=1
+log "GPU (QSV): $([[ $HAS_QSV == 1 ]] && echo yes || echo no)"
+
+can_qsv() { # codec pix_fmt
+  [[ $HAS_QSV == 1 ]] || return 1
+  case "$1:$2" in
+    hevc:yuv420p | hevc:yuvj420p | hevc:yuv420p10le | h264:yuv420p | h264:yuvj420p) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+proxy_qsv() { # in out
+  ffmpeg -nostdin -v error -y -init_hw_device qsv=hw:/dev/dri/renderD128 \
+    -hwaccel qsv -hwaccel_output_format qsv -i "$1" \
+    -map 0:v:0 -map '0:a:0?' \
+    -vf "scale_qsv=w=-1:h=540:format=nv12" \
+    -c:v h264_qsv -global_quality 26 -g 25 \
+    -c:a aac -b:a 128k -ac 2 \
+    -movflags +faststart -f mp4 "$2"
+}
+
+proxy_cpu() { # in out
+  nice -n 10 ffmpeg -nostdin -v error -y -skip_loop_filter all -i "$1" \
+    -map 0:v:0 -map '0:a:0?' \
+    -vf "scale=-2:540:flags=fast_bilinear,format=yuv420p" \
+    -c:v libx264 -preset veryfast -crf 26 -g 25 -keyint_min 25 -sc_threshold 0 \
+    -c:a aac -b:a 128k -ac 2 \
+    -movflags +faststart -f mp4 "$2"
+}
+
 n=0
-while IFS=$'\t' read -r stamp dur f; do
+while IFS=$'\t' read -r stamp dur codec pix f; do
   n=$((n + 1))
   base=$(basename "$f"); base=${base%.*}
   proxy="${stamp}_${base// /_}.mp4"
   printf '%s\t%s\t%s\t%s\n' "$proxy" "$stamp" "$dur" "$f" >> "$MANIFEST"
   if [[ -s "$OUT/$proxy" ]]; then continue; fi
-  log "[$n/$total] $proxy"
-  nice -n 10 ffmpeg -nostdin -v error -y -i "$f" \
-    -map 0:v:0 -map '0:a:0?' \
-    -vf "scale=-2:540:flags=bilinear,format=yuv420p" \
-    -c:v libx264 -preset veryfast -crf 26 -g 25 -keyint_min 25 -sc_threshold 0 \
-    -c:a aac -b:a 128k -ac 2 \
-    -movflags +faststart -f mp4 "$OUT/.$proxy.part" &&
-    mv "$OUT/.$proxy.part" "$OUT/$proxy" ||
-    log "FAILED: $f"
+  part="$OUT/.$proxy.part"
+  if can_qsv "$codec" "$pix" && proxy_qsv "$f" "$part"; then
+    how=gpu
+  elif proxy_cpu "$f" "$part"; then
+    how=cpu
+  else
+    log "[$n/$total] FAILED: $f"
+    rm -f "$part"
+    continue
+  fi
+  mv "$part" "$OUT/$proxy"
+  log "[$n/$total] $how $codec/$pix $proxy"
 done < "$LIST"
 
 log "done: $MONTH ($total clips) -> $OUT"
