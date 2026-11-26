@@ -1,7 +1,23 @@
 import { usePinch } from '@use-gesture/react';
 import {
+  ChevronDown,
+  ChevronFirst,
+  ChevronLast,
+  ChevronLeft,
+  ChevronRight,
+  Expand,
+  Pause,
+  Play,
+  Redo2,
+  Scissors,
+  Trash2,
+  Undo2,
+  X,
+} from 'lucide-react';
+import {
   type CSSProperties,
   memo,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -20,6 +36,9 @@ const MONTH_ID = /^\d{4}-\d{2}$/;
 const MIN_PPS = 0.05;
 const MAX_PPS = 400;
 const POLL_MS = 3000;
+/** Shortest clip a trim may leave, in timeline seconds. */
+const MIN_CLIP = 0.2;
+const RULER_H = 30;
 
 function fmt(t: number): string {
   const s = Math.max(0, t);
@@ -27,13 +46,19 @@ function fmt(t: number): string {
   const m = Math.floor((s % 3600) / 60);
   const sec = Math.floor(s % 60);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${pad(m)}:${pad(sec)}`;
 }
 
-/** A tick spacing that leaves ~120px between labels at this zoom. */
+/** Ruler label: seconds when zoomed in (InShot's "4s"), clock time otherwise. */
+function tickLabel(t: number, step: number): string {
+  if (step < 60 && t < 60) return `${t}s`;
+  return fmt(t);
+}
+
+/** A tick spacing that leaves ~100px between labels at this zoom. */
 function tickStep(pps: number): number {
   const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
-  return steps.find((s) => s * pps >= 120) ?? 3600;
+  return steps.find((s) => s * pps >= 100) ?? 3600;
 }
 
 function monthLabel(id: string): string {
@@ -50,11 +75,71 @@ async function fetchDoc(timeline: string): Promise<Composition> {
   return ((await res.json()) as { document: Composition }).document;
 }
 
+function readStored(key: string, fallback: number): number {
+  try {
+    return Number(localStorage.getItem(key)) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function store(key: string, value: number): void {
+  try {
+    localStorage.setItem(key, String(value));
+  } catch {
+    // Private mode: the setting just isn't remembered.
+  }
+}
+
+/** A trim in progress: the clip's new source range, before it is saved. */
+interface TrimDraft {
+  clipId: string;
+  srcIn: number;
+  srcOut: number;
+}
+
+/** The cut list as it would be with `draft` applied, later clips rippled. */
+function withDraft(segs: Segment[], draft: TrimDraft | null): Segment[] {
+  if (!draft) return segs;
+  const target = segs.find((s) => s.clipId === draft.clipId);
+  if (!target) return segs;
+  const newEnd = target.start + (draft.srcOut - draft.srcIn) / target.speed;
+  const shift = newEnd - target.end;
+  return segs.map((s) => {
+    if (s.clipId === draft.clipId) {
+      return { ...s, srcIn: draft.srcIn, srcOut: draft.srcOut, end: newEnd };
+    }
+    if (s.start >= target.end - 1e-3) return { ...s, start: s.start + shift, end: s.end + shift };
+    return s;
+  });
+}
+
 /**
- * The Cut screen: watch a month and cut it, Final Cut for iPad style. A fixed
- * playhead in the middle with the timeline scrolling under it, pinch to zoom,
- * tap a clip to select it, Blade and Delete. Delete is magnetic: later clips
- * slide left to close the gap.
+ * Verbs that save a trim magnetically: the clip's new range, and every later
+ * clip moved by the change in length. Moves run in an order that never makes
+ * two clips overlap mid-batch.
+ */
+function trimVerbs(segs: Segment[], draft: TrimDraft): Verb[] {
+  const target = segs.find((s) => s.clipId === draft.clipId);
+  if (!target) return [];
+  const shift = (draft.srcOut - draft.srcIn) / target.speed - (target.end - target.start);
+  const later = segs.filter((s) => s.start >= target.end - 1e-3);
+  const trim: Verb = {
+    verb: 'trim',
+    clipId: draft.clipId,
+    sourceInSec: draft.srcIn,
+    sourceOutSec: draft.srcOut,
+  };
+  const moves = later.map(
+    (s): Verb => ({ verb: 'move', clipId: s.clipId, startSec: s.start + shift }),
+  );
+  return shift > 0 ? [...moves.reverse(), trim] : [trim, ...moves];
+}
+
+/**
+ * The Cut screen, InShot style: preview on top, a transport row (play · time ·
+ * undo/redo), a filmstrip under a fixed centre playhead, and a tool row. Tap a
+ * clip to select it; drag its yellow handles to trim. Every edit is magnetic.
  */
 export function CutApp() {
   const [months, setMonths] = useState<string[]>([]);
@@ -62,24 +147,19 @@ export function CutApp() {
     new URLSearchParams(location.search).get('t'),
   );
   const [doc, setDoc] = useState<Composition | null>(null);
+  const [durations, setDurations] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
-  const [tlHeight, setTlHeight] = useState<number>(() => {
-    try {
-      return Number(localStorage.getItem('cut.tlHeight')) || 170;
-    } catch {
-      return 170;
-    }
-  });
+  const [draft, setDraft] = useState<TrimDraft | null>(null);
+  const [tlHeight, setTlHeight] = useState(() => readStored('cut.tlHeight', 170));
   const viewerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetch('/api/timelines')
-      .then((r) => r.json() as Promise<{ timelines?: { id: string }[] } | { id: string }[]>)
+      .then((r) => r.json() as Promise<{ timelines?: { id: string }[] }>)
       .then((json) => {
-        const list = Array.isArray(json) ? json : (json.timelines ?? []);
-        const ids = list
+        const ids = (json.timelines ?? [])
           .map((t) => t.id)
           .filter((id) => MONTH_ID.test(id))
           .sort();
@@ -98,11 +178,14 @@ export function CutApp() {
     const load = () =>
       fetchDoc(timeline)
         .then((d) => {
-          // Keep the same object while nothing changed, so nothing re-renders.
           if (alive) setDoc((prev) => (prev && prev.rev === d.rev ? prev : d));
         })
         .catch((e: unknown) => alive && setError(String(e)));
     void load();
+    fetch('/api/media/durations')
+      .then((r) => r.json() as Promise<Record<string, number>>)
+      .then((d) => alive && setDurations(d))
+      .catch(() => undefined);
     const timer = window.setInterval(load, POLL_MS);
     return () => {
       alive = false;
@@ -111,6 +194,7 @@ export function CutApp() {
   }, [timeline]);
 
   const segs = useMemo(() => (doc ? segmentsOf(doc) : []), [doc]);
+  const shown = useMemo(() => withDraft(segs, draft), [segs, draft]);
   const player = usePlayer(segs);
   const fps = doc?.fps ?? 25;
 
@@ -131,7 +215,7 @@ export function CutApp() {
     [timeline],
   );
 
-  const history_ = useCallback(
+  const step = useCallback(
     async (dir: 'undo' | 'redo') => {
       if (!timeline) return;
       setBusy(true);
@@ -147,26 +231,23 @@ export function CutApp() {
     [timeline],
   );
 
-  const blade = useCallback(() => {
+  const split = useCallback(() => {
     const seg = segmentAt(segs, player.time);
     if (!seg) return;
-    // A cut within a frame of an edge would leave a sliver clip.
     if (player.time - seg.start < 1 / fps || seg.end - player.time < 1 / fps) return;
     void apply([{ verb: 'split', clipId: seg.clipId, atSec: player.time }]);
   }, [apply, fps, player.time, segs]);
 
   const remove = useCallback(() => {
-    const target =
-      segs.find((s) => s.clipId === selected) ?? segmentAt(segs, player.time) ?? undefined;
+    const target = segs.find((s) => s.clipId === selected) ?? segmentAt(segs, player.time);
     if (!target) return;
     const gap = target.end - target.start;
     const later = segs.filter((s) => s.start >= target.end - 1e-3);
-    const verbs: Verb[] = [
+    setSelected(null);
+    void apply([
       { verb: 'remove', clipId: target.clipId },
       ...later.map((s): Verb => ({ verb: 'move', clipId: s.clipId, startSec: s.start - gap })),
-    ];
-    setSelected(null);
-    void apply(verbs);
+    ]);
   }, [apply, player.time, segs, selected]);
 
   const jumpEdit = useCallback(
@@ -180,7 +261,55 @@ export function CutApp() {
     [player, segs],
   );
 
-  // Keyboard, for the Mac (and an iPad keyboard).
+  const trimStart = useCallback(
+    (clipId: string) => {
+      const seg = segs.find((s) => s.clipId === clipId);
+      if (seg) setDraft({ clipId, srcIn: seg.srcIn, srcOut: seg.srcOut });
+    },
+    [segs],
+  );
+
+  const trimMove = useCallback(
+    (clipId: string, edge: 'in' | 'out', deltaSec: number) => {
+      const seg = segs.find((s) => s.clipId === clipId);
+      if (!seg) return;
+      const dsrc = deltaSec * seg.speed;
+      const minSrc = MIN_CLIP * seg.speed;
+      const maxOut = durations[seg.mediaId] ?? seg.srcOut;
+      const next =
+        edge === 'in'
+          ? {
+              clipId,
+              srcIn: Math.min(Math.max(0, seg.srcIn + dsrc), seg.srcOut - minSrc),
+              srcOut: seg.srcOut,
+            }
+          : {
+              clipId,
+              srcIn: seg.srcIn,
+              srcOut: Math.max(Math.min(maxOut, seg.srcOut + dsrc), seg.srcIn + minSrc),
+            };
+      setDraft(next);
+      player.peek(seg, edge === 'in' ? next.srcIn : Math.max(next.srcIn, next.srcOut - 1 / fps));
+    },
+    [durations, fps, player, segs],
+  );
+
+  const draftRef = useRef<TrimDraft | null>(null);
+  draftRef.current = draft;
+  const trimEnd = useCallback(() => {
+    const d = draftRef.current;
+    if (!d) return;
+    const seg = segs.find((s) => s.clipId === d.clipId);
+    const changed =
+      seg && (Math.abs(seg.srcIn - d.srcIn) > 1e-3 || Math.abs(seg.srcOut - d.srcOut) > 1e-3);
+    if (!changed) {
+      setDraft(null);
+      return;
+    }
+    // Keep showing the draft until the saved document replaces it.
+    void apply(trimVerbs(segs, d)).then(() => setDraft(null));
+  }, [apply, segs]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
@@ -189,14 +318,14 @@ export function CutApp() {
       const k = e.key.toLowerCase();
       if (mod && k === 'z') {
         e.preventDefault();
-        void history_(e.shiftKey ? 'redo' : 'undo');
-      } else if (k === ' ' || k === 'k') {
+        void step(e.shiftKey ? 'redo' : 'undo');
+      } else if (k === ' ') {
         e.preventDefault();
-        if (k === 'k') player.pause();
-        else player.toggle();
-      } else if (k === 'l') player.play();
+        player.toggle();
+      } else if (k === 'k') player.pause();
+      else if (k === 'l') player.play();
       else if (k === 'j') player.seek(player.time - 5);
-      else if (k === 'b') blade();
+      else if (k === 'b' || k === 's') split();
       else if (k === 'backspace' || k === 'delete') {
         e.preventDefault();
         remove();
@@ -212,163 +341,167 @@ export function CutApp() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [blade, fps, history_, jumpEdit, player, remove]);
+  }, [fps, jumpEdit, player, remove, split, step]);
 
-  const cur = segmentAt(segs, player.time);
+  const fullscreen = () => {
+    const box = viewerRef.current;
+    const vid = player.videoRefs[player.active].current as
+      | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
+      | null;
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else if (box?.requestFullscreen) void box.requestFullscreen();
+    else vid?.webkitEnterFullscreen?.();
+  };
+
+  const here = segmentAt(segs, player.time);
+  const canSplit =
+    !!here && player.time - here.start >= 1 / fps && here.end - player.time >= 1 / fps;
+  const canDelete = !!selected || !!here;
 
   return (
     <div className="cut">
       <header className="cut-top">
-        <select
-          className="cut-month"
-          value={timeline ?? ''}
-          onChange={(e) => {
-            player.pause();
-            setDoc(null);
-            setSelected(null);
-            setTimeline(e.target.value);
-          }}
-        >
-          {months.length === 0 ? <option value="">No months yet</option> : null}
-          {months.map((m) => (
-            <option key={m} value={m}>
-              {monthLabel(m)}
-            </option>
-          ))}
-        </select>
-        <span className="cut-clock">
-          {fmt(player.time)} <span className="cut-dim">/ {fmt(player.duration)}</span>
-        </span>
-        <span className="cut-dim cut-count">{segs.length} clips</span>
-        {busy ? <span className="cut-dim">Saving…</span> : null}
-        {error ? (
-          <button type="button" className="cut-error" onClick={() => setError(null)}>
-            {error} ✕
-          </button>
-        ) : null}
+        <label className="cut-month">
+          <span>{timeline ? monthLabel(timeline) : 'No months'}</span>
+          <ChevronDown size={18} strokeWidth={2.5} aria-hidden />
+          <select
+            aria-label="Month"
+            value={timeline ?? ''}
+            onChange={(e) => {
+              player.pause();
+              setDoc(null);
+              setSelected(null);
+              setTimeline(e.target.value);
+            }}
+          >
+            {months.map((m) => (
+              <option key={m} value={m}>
+                {monthLabel(m)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="cut-meta">{segs.length} clips</span>
+        <span className={`cut-saving${busy ? ' is-on' : ''}`}>Saving…</span>
+        <button type="button" className="cut-next" disabled title="Export comes next">
+          Export
+          <ChevronRight size={18} strokeWidth={2.5} aria-hidden />
+        </button>
       </header>
 
-      {/* Tapping the picture toggles playback; the Play button is the accessible control. */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: duplicate of the Play button. */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: Space is handled globally. */}
-      <div className="cut-viewer" ref={viewerRef} onClick={player.toggle}>
-        <button
-          type="button"
-          className="cut-fs"
-          title="Fullscreen"
-          onClick={(e) => {
-            e.stopPropagation();
-            const box = viewerRef.current;
-            const vid = player.videoRefs[player.active].current as
-              | (HTMLVideoElement & { webkitEnterFullscreen?: () => void })
-              | null;
-            if (document.fullscreenElement) void document.exitFullscreen();
-            else if (box?.requestFullscreen) void box.requestFullscreen();
-            else vid?.webkitEnterFullscreen?.();
-          }}
-        >
-          ⛶
+      {error ? (
+        <button type="button" className="cut-toast" onClick={() => setError(null)}>
+          <span>{error}</span>
+          <X size={16} aria-hidden />
         </button>
-        {player.videoRefs.map((ref, i) => (
-          // biome-ignore lint/a11y/useMediaCaption: personal footage has no caption tracks.
-          <video
-            // biome-ignore lint/suspicious/noArrayIndexKey: exactly two fixed players.
-            key={i}
-            ref={ref}
-            className="cut-video"
-            style={{ opacity: !player.blank && player.active === i ? 1 : 0 }}
-            playsInline
-            preload="auto"
-          />
-        ))}
-        {!doc ? <div className="cut-msg">Loading…</div> : null}
-        {doc && segs.length === 0 ? <div className="cut-msg">This month has no clips.</div> : null}
-        {cur ? <div className="cut-clipname">{cur.clipId}</div> : null}
+      ) : null}
+
+      <div className="cut-stage">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: duplicate of the Play button. */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: Space is handled globally. */}
+        <div className="cut-viewer" ref={viewerRef} onClick={player.toggle}>
+          {player.videoRefs.map((ref, i) => (
+            // biome-ignore lint/a11y/useMediaCaption: personal footage has no caption tracks.
+            <video
+              // biome-ignore lint/suspicious/noArrayIndexKey: exactly two fixed players.
+              key={i}
+              ref={ref}
+              className="cut-video"
+              style={{ opacity: !player.blank && player.active === i ? 1 : 0 }}
+              playsInline
+              preload="auto"
+            />
+          ))}
+          {!doc ? <div className="cut-msg">Loading…</div> : null}
+          {doc && segs.length === 0 ? <div className="cut-msg">No clips this month</div> : null}
+          <button
+            type="button"
+            className="cut-icon cut-fs"
+            aria-label="Fullscreen"
+            onClick={(e) => {
+              e.stopPropagation();
+              fullscreen();
+            }}
+          >
+            <Expand size={18} />
+          </button>
+        </div>
       </div>
 
-      <div className="cut-tools">
-        <button type="button" onClick={() => void history_('undo')} title="Undo (⌘Z)">
-          ↶
-        </button>
-        <button type="button" onClick={() => void history_('redo')} title="Redo (⇧⌘Z)">
-          ↷
-        </button>
-        <span className="cut-spacer" />
-        <button type="button" onClick={() => jumpEdit(-1)} title="Previous edit (↑)">
-          ⏮
-        </button>
-        <button
-          type="button"
-          onClick={() => player.seek(player.time - 1 / fps)}
-          title="Back 1 frame (←)"
-        >
-          ◀︎
-        </button>
-        <button
-          type="button"
-          className="cut-play"
-          onClick={player.toggle}
-          title="Play/Pause (Space)"
-        >
-          {player.playing ? '❚❚' : '▶︎'}
-        </button>
-        <button
-          type="button"
-          onClick={() => player.seek(player.time + 1 / fps)}
-          title="Forward 1 frame (→)"
-        >
-          ▶︎
-        </button>
-        <button type="button" onClick={() => jumpEdit(1)} title="Next edit (↓)">
-          ⏭
-        </button>
-        <span className="cut-spacer" />
-        <button
-          type="button"
-          className="cut-blade"
-          onClick={blade}
-          disabled={busy}
-          title="Blade at playhead (B)"
-        >
-          ✂︎ Blade
-        </button>
-        <button
-          type="button"
-          className="cut-delete"
-          onClick={remove}
-          disabled={busy}
-          title="Delete (⌫)"
-        >
-          🗑 Delete
-        </button>
+      <div className="cut-transport">
+        <div className="cut-transport-side">
+          <button
+            type="button"
+            className="cut-icon cut-icon-lg"
+            aria-label={player.playing ? 'Pause' : 'Play'}
+            onClick={player.toggle}
+          >
+            {player.playing ? (
+              <Pause size={26} fill="currentColor" strokeWidth={0} />
+            ) : (
+              <Play size={26} fill="currentColor" strokeWidth={0} />
+            )}
+          </button>
+          <button
+            type="button"
+            className="cut-icon"
+            aria-label="Previous cut"
+            onClick={() => jumpEdit(-1)}
+          >
+            <ChevronFirst size={22} />
+          </button>
+          <button
+            type="button"
+            className="cut-icon"
+            aria-label="Next cut"
+            onClick={() => jumpEdit(1)}
+          >
+            <ChevronLast size={22} />
+          </button>
+        </div>
+        <div className="cut-time">
+          <span>{fmt(player.time)}</span>
+          <span className="cut-time-total">{fmt(player.duration)}</span>
+        </div>
+        <div className="cut-transport-side cut-transport-end">
+          <button
+            type="button"
+            className="cut-icon"
+            aria-label="Undo"
+            onClick={() => void step('undo')}
+          >
+            <Undo2 size={22} />
+          </button>
+          <button
+            type="button"
+            className="cut-icon"
+            aria-label="Redo"
+            onClick={() => void step('redo')}
+          >
+            <Redo2 size={22} />
+          </button>
+        </div>
       </div>
 
       {/* biome-ignore lint/a11y/useSemanticElements: <hr> can't hold a drag handle. */}
       <div
-        className="cut-split"
+        className="cut-grabber"
         role="separator"
         aria-orientation="horizontal"
         aria-label="Drag to resize the timeline"
+        aria-valuenow={tlHeight}
+        tabIndex={0}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId);
-          const startY = e.clientY;
-          const startH = tlHeight;
-          const move = (ev: PointerEvent) => {
-            const h = Math.min(
-              window.innerHeight - 160,
-              Math.max(90, startH + startY - ev.clientY),
-            );
-            setTlHeight(h);
-          };
+          const y0 = e.clientY;
+          const h0 = tlHeight;
+          const move = (ev: PointerEvent) =>
+            setTlHeight(Math.min(window.innerHeight * 0.6, Math.max(96, h0 + y0 - ev.clientY)));
           const up = () => {
             window.removeEventListener('pointermove', move);
             window.removeEventListener('pointerup', up);
             setTlHeight((h) => {
-              try {
-                localStorage.setItem('cut.tlHeight', String(h));
-              } catch {
-                // Private mode: the size just isn't remembered.
-              }
+              store('cut.tlHeight', h);
               return h;
             });
           };
@@ -381,16 +514,44 @@ export function CutApp() {
 
       <Timeline
         height={tlHeight}
-        segs={segs}
+        segs={shown}
         time={player.time}
         playing={player.playing}
         selected={selected}
+        trimming={draft?.clipId ?? null}
         onSelect={setSelected}
         onScrub={(t) => {
           if (player.playing) player.pause();
           player.seek(t);
         }}
+        onTrimStart={trimStart}
+        onTrimMove={trimMove}
+        onTrimEnd={trimEnd}
       />
+
+      <nav className="cut-bar" aria-label="Edit tools">
+        {selected ? (
+          <button
+            type="button"
+            className="cut-tool cut-tool-back"
+            aria-label="Deselect"
+            onClick={() => setSelected(null)}
+          >
+            <ChevronLeft size={26} strokeWidth={2.5} />
+          </button>
+        ) : null}
+        <button type="button" className="cut-tool" onClick={split} disabled={busy || !canSplit}>
+          <Scissors size={24} />
+          <span>Split</span>
+        </button>
+        <button type="button" className="cut-tool" onClick={remove} disabled={busy || !canDelete}>
+          <Trash2 size={24} />
+          <span>Delete</span>
+        </button>
+        <p className="cut-bar-hint">
+          {selected ? 'Drag the yellow handles to trim' : 'Tap a clip to select · pinch to zoom'}
+        </p>
+      </nav>
     </div>
   );
 }
@@ -401,16 +562,24 @@ function Timeline({
   time,
   playing,
   selected,
+  trimming,
   onSelect,
   onScrub,
+  onTrimStart,
+  onTrimMove,
+  onTrimEnd,
 }: {
   height: number;
   segs: Segment[];
   time: number;
   playing: boolean;
   selected: string | null;
+  trimming: string | null;
   onSelect: (id: string | null) => void;
   onScrub: (t: number) => void;
+  onTrimStart: (clipId: string) => void;
+  onTrimMove: (clipId: string, edge: 'in' | 'out', deltaSec: number) => void;
+  onTrimEnd: () => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
@@ -428,42 +597,40 @@ function Timeline({
     return () => ro.disconnect();
   }, []);
 
-  // Start where clips are readable: about 3 minutes across the screen.
   useEffect(() => {
-    if (pps === null && total > 0) setPps(Math.max(MIN_PPS, width / 180));
+    if (pps === null && total > 0) setPps(readStored('cut.pps', Math.max(MIN_PPS, width / 120)));
   }, [pps, total, width]);
   const zoom = pps ?? 1;
+  const setZoom = useCallback((z: number) => {
+    const v = Math.min(MAX_PPS, Math.max(MIN_PPS, z));
+    setPps(v);
+    store('cut.pps', v);
+  }, []);
   const pad = width / 2;
-  // Lane height in px: the timeline minus the ruler (34) and the lane's top margin (4).
-  const laneHeight = Math.max(20, height - 46);
+  const laneHeight = Math.max(36, Math.min(72, height - RULER_H - 24));
 
-  // Keep the playhead under the fixed centre line.
+  // Keep the playhead under the fixed centre line (not while a trim holds it still).
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (!el || touching.current) return;
+    if (!el || touching.current || trimming) return;
     const target = time * zoom;
     if (Math.abs(el.scrollLeft - target) > 0.5) {
       programmatic.current = true;
       el.scrollLeft = target;
     }
-  }, [time, zoom]);
+  }, [time, zoom, trimming]);
 
-  usePinch(
-    ({ offset: [scale] }) => {
-      setPps(Math.min(MAX_PPS, Math.max(MIN_PPS, scale)));
-    },
-    {
-      target: scroller,
-      scaleBounds: { min: MIN_PPS, max: MAX_PPS },
-      from: () => [zoom, 0],
-      eventOptions: { passive: false },
-      pinchOnWheel: true,
-    },
-  );
+  usePinch(({ offset: [scale] }) => setZoom(scale), {
+    target: scroller,
+    scaleBounds: { min: MIN_PPS, max: MAX_PPS },
+    from: () => [zoom, 0],
+    eventOptions: { passive: false },
+    pinchOnWheel: true,
+  });
 
   const onScroll = () => {
     const el = scroller.current;
-    if (!el) return;
+    if (!el || trimming) return;
     if (programmatic.current) {
       programmatic.current = false;
       return;
@@ -472,75 +639,52 @@ function Timeline({
     onScrub(el.scrollLeft / zoom);
   };
 
-  const step = tickStep(zoom);
+  const tick = tickStep(zoom);
   const ticks: number[] = [];
-  for (let t = 0; t <= total + step; t += step) ticks.push(t);
+  for (let t = 0; t <= total + tick; t += tick) ticks.push(t);
+
+  const release = () => {
+    window.setTimeout(() => {
+      touching.current = false;
+    }, 500);
+  };
 
   return (
     <div className="cut-tl" style={{ height }}>
-      <div className="cut-zoom">
-        <input
-          type="range"
-          className="cut-zoom-slider"
-          aria-label="Timeline zoom"
-          min={Math.log(MIN_PPS)}
-          max={Math.log(MAX_PPS)}
-          step={0.01}
-          value={Math.log(zoom)}
-          onChange={(e) => setPps(Math.exp(Number(e.target.value)))}
-        />
-        <button type="button" onClick={() => setPps(Math.max(MIN_PPS, zoom / 2))} title="Zoom out">
-          −
-        </button>
-        <button
-          type="button"
-          onClick={() => setPps(Math.max(MIN_PPS, (width * 0.9) / Math.max(total, 1)))}
-          title="Fit"
-        >
-          ⤢
-        </button>
-        <button type="button" onClick={() => setPps(Math.min(MAX_PPS, zoom * 2))} title="Zoom in">
-          +
-        </button>
-      </div>
       <div
-        className="cut-scroll"
+        className={`cut-scroll${trimming ? ' is-trimming' : ''}`}
         ref={scroller}
         onScroll={onScroll}
         onPointerDown={() => {
           touching.current = true;
         }}
-        onPointerUp={() => {
-          touching.current = false;
-        }}
-        onPointerCancel={() => {
-          touching.current = false;
-        }}
-        onWheel={() => {
-          touching.current = true;
-          window.setTimeout(() => {
-            touching.current = false;
-          }, 150);
-        }}
+        onPointerUp={release}
+        onPointerCancel={release}
         onTouchStart={() => {
           touching.current = true;
         }}
-        onTouchEnd={() => {
-          // Momentum scrolling keeps going after the finger lifts.
-          window.setTimeout(() => {
-            touching.current = false;
-          }, 600);
+        onTouchEnd={release}
+        onWheel={() => {
+          touching.current = true;
+          release();
         }}
       >
         <div className="cut-inner" style={{ width: total * zoom + width }}>
-          <div className="cut-ruler">
+          <div className="cut-ruler" style={{ height: RULER_H }}>
             {ticks.map((t) => (
               <span key={t} className="cut-tick" style={{ left: pad + t * zoom }}>
-                {fmt(t)}
+                {tickLabel(t, tick)}
               </span>
             ))}
+            {ticks.map((t) => (
+              <span
+                key={`m${t}`}
+                className="cut-tick-mid"
+                style={{ left: pad + (t + tick / 2) * zoom }}
+              />
+            ))}
           </div>
-          <div className="cut-lane">
+          <div className="cut-lane" style={{ height: laneHeight }}>
             {segs.map((s) => (
               <ClipBlock
                 key={s.clipId}
@@ -548,8 +692,12 @@ function Timeline({
                 left={pad + s.start * zoom}
                 width={(s.end - s.start) * zoom}
                 laneHeight={laneHeight}
+                zoom={zoom}
                 selected={s.clipId === selected}
                 onSelect={onSelect}
+                onTrimStart={onTrimStart}
+                onTrimMove={onTrimMove}
+                onTrimEnd={onTrimEnd}
               />
             ))}
           </div>
@@ -565,11 +713,11 @@ function Timeline({
  * the NAS; if hundreds of strips queue up, the video stream waits behind them.
  */
 const STRIP_SLOTS = 2;
+const STRIP_FRAMES = 12;
 let stripsInFlight = 0;
 const stripQueue: (() => void)[] = [];
 /** Loaded strips → aspect ratio (width / height) of one frame in them. */
 const loadedStrips = new Map<string, number>();
-const STRIP_FRAMES = 12;
 
 function loadStrip(url: string): Promise<void> {
   if (loadedStrips.has(url)) return Promise.resolve();
@@ -606,62 +754,101 @@ function useStrip(mediaId: string): { url: string; aspect: number } | null {
 }
 
 /**
- * A clip on the timeline, Final Cut style: whole frames at their true shape,
- * as many as fit side by side, each cropped to its slot rather than squashed.
- * A narrow clip shows one frame from its middle.
+ * A clip on the timeline: whole frames at their true shape, as many as fit,
+ * each cropped to its slot. Selected, it gets InShot's yellow frame with
+ * chevron handles on each end to drag-trim.
  */
 const ClipBlock = memo(function ClipBlock({
   seg,
   left,
   width,
   laneHeight,
+  zoom,
   selected,
   onSelect,
+  onTrimStart,
+  onTrimMove,
+  onTrimEnd,
 }: {
   seg: Segment;
   left: number;
   width: number;
   laneHeight: number;
+  zoom: number;
   selected: boolean;
   onSelect: (id: string | null) => void;
+  onTrimStart: (clipId: string) => void;
+  onTrimMove: (clipId: string, edge: 'in' | 'out', deltaSec: number) => void;
+  onTrimEnd: () => void;
 }) {
   const strip = useStrip(seg.mediaId);
-  const w = Math.max(2, width - 1);
+  const w = Math.max(2, width - 2);
   const frameW = laneHeight * (strip?.aspect ?? 16 / 9);
   const slots = Math.max(1, Math.min(STRIP_FRAMES, Math.round(w / frameW)));
   const slotW = w / slots;
   const tiles: { key: number; style: CSSProperties }[] = [];
   if (strip && w > 4) {
     for (let i = 0; i < slots; i++) {
-      const frame = Math.min(
-        STRIP_FRAMES - 1,
-        Math.floor(((i + 0.5) / slots) * STRIP_FRAMES),
-      );
+      const frame = Math.min(STRIP_FRAMES - 1, Math.floor(((i + 0.5) / slots) * STRIP_FRAMES));
       tiles.push({
         key: i,
         style: {
           width: slotW,
           backgroundImage: `url("${strip.url}")`,
           backgroundSize: `${frameW * STRIP_FRAMES}px ${laneHeight}px`,
-          // Centre the chosen frame in its slot; the slot crops the rest.
           backgroundPositionX: -(frame * frameW) + (slotW - frameW) / 2,
         },
       });
     }
   }
+
+  const handle = (edge: 'in' | 'out') => (e: ReactPointerEvent<HTMLSpanElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const x0 = e.clientX;
+    onTrimStart(seg.clipId);
+    const move = (ev: PointerEvent) => onTrimMove(seg.clipId, edge, (ev.clientX - x0) / zoom);
+    const up = () => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      onTrimEnd();
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  };
+
+  const dur = seg.end - seg.start;
   return (
-    <button
-      type="button"
-      className={`cut-clip${selected ? ' is-selected' : ''}`}
-      style={{ left, width: w }}
-      onClick={(e) => {
-        e.stopPropagation();
-        onSelect(selected ? null : seg.clipId);
-      }}
-    >
-      {tiles.map((t) => (
-        <span key={t.key} className="cut-frame" style={t.style} />
-      ))}
-    </button>
+    <div className={`cut-clip${selected ? ' is-selected' : ''}`} style={{ left, width: w }}>
+      <button
+        type="button"
+        className="cut-clip-body"
+        aria-label={`Clip, ${dur.toFixed(1)} seconds`}
+        aria-pressed={selected}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelect(selected ? null : seg.clipId);
+        }}
+      >
+        {tiles.map((t) => (
+          <span key={t.key} className="cut-frame" style={t.style} />
+        ))}
+      </button>
+      {selected ? (
+        <>
+          <span className="cut-handle cut-handle-in" onPointerDown={handle('in')}>
+            <ChevronLeft size={18} strokeWidth={3} aria-hidden />
+          </span>
+          <span className="cut-handle cut-handle-out" onPointerDown={handle('out')}>
+            <ChevronRight size={18} strokeWidth={3} aria-hidden />
+          </span>
+          <span className="cut-clip-dur">{dur.toFixed(1)}s</span>
+        </>
+      ) : null}
+    </div>
   );
 });

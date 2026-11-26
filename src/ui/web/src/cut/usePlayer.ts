@@ -26,6 +26,8 @@ export interface Player {
   pause: () => void;
   toggle: () => void;
   seek: (t: number) => void;
+  /** Show one source frame without moving the playhead (trim preview). */
+  peek: (seg: Segment, src: number) => void;
 }
 
 function setSourceTime(el: HTMLVideoElement, t: number): void {
@@ -211,6 +213,17 @@ export function usePlayer(segs: Segment[]): Player {
     raf.current = requestAnimationFrame(tick);
   }, [els, enter, tick]);
 
+  const peek = useCallback(
+    (seg: Segment, src: number) => {
+      if (playingRef.current) stop();
+      const [on] = els();
+      if (!on) return;
+      cue(on, seg, src);
+      setBlank(false);
+    },
+    [els, stop],
+  );
+
   const toggle = useCallback(() => {
     if (playingRef.current) stop();
     else play();
@@ -236,5 +249,6 @@ export function usePlayer(segs: Segment[]): Player {
     pause: stop,
     toggle,
     seek,
+    peek,
   };
 }

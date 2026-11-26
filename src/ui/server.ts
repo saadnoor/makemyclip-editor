@@ -581,6 +581,13 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
    * STRIP_FRAMES stills, cached under the workspace. The timeline shows it as a
    * repeating background, so a whole month costs one small image per clip.
    */
+  /** GET /api/media/durations — every source's length, so the Cut screen can bound trims. */
+  app.get('/api/media/durations', async (c) => {
+    const out: Record<string, number> = {};
+    for (const [id, ref] of await buildMediaRefs()) out[id] = ref.durationSec;
+    return c.json(out);
+  });
+
   app.get('/api/media/strip', async (c) => {
     const mediaId = c.req.query('mediaId') ?? '';
     if (!mediaId) return c.json({ error: 'mediaId required' }, 400);

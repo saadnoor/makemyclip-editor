@@ -1,86 +1,126 @@
 .cut {
-  --cut-bg: #111;
-  --cut-panel: #1c1c1e;
-  --cut-line: #2c2c2e;
-  --cut-text: #f2f2f7;
-  --cut-dim: #8e8e93;
-  --cut-accent: #ffd60a;
-  --cut-clip: #2f6f5e;
-  --cut-danger: #ff453a;
+  --bg: #0e0f13;
+  --surface: #16171c;
+  --surface-2: #23242b;
+  --line: rgba(255, 255, 255, 0.07);
+  --text: #f4f4f6;
+  --muted: #8b8d98;
+  --select: #ffd23f;
+  --radius: 4px;
   position: fixed;
   inset: 0;
   display: flex;
   flex-direction: column;
-  background: var(--cut-bg);
-  color: var(--cut-text);
+  background: var(--bg);
+  color: var(--text);
   font:
     15px / 1.3 -apple-system,
     BlinkMacSystemFont,
     "SF Pro Text",
+    "Inter",
     system-ui,
     sans-serif;
+  -webkit-font-smoothing: antialiased;
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
+  padding-top: env(safe-area-inset-top);
 }
 
 .cut button {
   font: inherit;
   color: inherit;
-  background: var(--cut-panel);
-  border: 1px solid var(--cut-line);
-  border-radius: 10px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 12px;
+  border: 0;
+  background: none;
   cursor: pointer;
-}
-.cut button:active {
-  background: #3a3a3c;
+  -webkit-tap-highlight-color: transparent;
 }
 .cut button:disabled {
-  opacity: 0.4;
+  opacity: 0.3;
+  cursor: default;
+}
+.cut button:focus-visible,
+.cut .cut-grabber:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
 }
 
+/* ── Top bar ─────────────────────────────────────────── */
 .cut-top {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: max(8px, env(safe-area-inset-top)) 16px 8px;
-  border-bottom: 1px solid var(--cut-line);
-  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  min-height: 56px;
 }
 .cut-month {
-  font: inherit;
-  font-weight: 600;
-  color: var(--cut-text);
-  background: var(--cut-panel);
-  border: 1px solid var(--cut-line);
-  border-radius: 10px;
-  min-height: 40px;
-  padding: 0 10px;
-}
-.cut-clock {
-  font-variant-numeric: tabular-nums;
-  font-size: 17px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 18px;
   font-weight: 600;
 }
-.cut-dim {
-  color: var(--cut-dim);
-  font-weight: 400;
+.cut-month select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  font-size: 16px;
 }
-.cut button.cut-error {
-  border-color: var(--cut-danger);
-  color: var(--cut-danger);
-  min-height: 32px;
+.cut-meta {
+  color: var(--muted);
   font-size: 13px;
 }
+.cut-saving {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.cut-saving.is-on {
+  opacity: 1;
+}
+.cut button.cut-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 12px 0 18px;
+  border-radius: 10px;
+  background: var(--text);
+  color: #000;
+  font-weight: 600;
+}
+.cut button.cut-toast {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  top: calc(env(safe-area-inset-top) + 60px);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #3a1416;
+  color: #ffb4ae;
+  font-size: 13px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
 
+/* ── Preview ─────────────────────────────────────────── */
+.cut-stage {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  padding: 4px 0;
+}
 .cut-viewer {
   position: relative;
-  flex: 1 1 auto;
-  min-height: 160px;
+  flex: 1;
   background: #000;
   overflow: hidden;
 }
@@ -97,64 +137,88 @@
   inset: 0;
   display: grid;
   place-items: center;
-  color: var(--cut-dim);
+  color: var(--muted);
 }
-.cut-clipname {
+.cut button.cut-fs {
   position: absolute;
-  left: 10px;
-  bottom: 8px;
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.55);
-  pointer-events: none;
+  right: 10px;
+  bottom: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
 }
 
-.cut-tools {
+/* ── Icon buttons ────────────────────────────────────── */
+.cut button.cut-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--text);
+  transition:
+    background 0.15s,
+    transform 0.1s;
+}
+.cut button.cut-icon:active {
+  background: var(--surface-2);
+  transform: scale(0.92);
+}
+.cut button.cut-icon-lg {
+  width: 48px;
+  height: 48px;
+}
+
+/* ── Transport: play · time · undo/redo ──────────────── */
+.cut-transport {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 6px 8px 0;
+}
+.cut-transport-side {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--cut-line);
-  border-bottom: 1px solid var(--cut-line);
-  overflow-x: auto;
+  gap: 2px;
 }
-.cut-spacer {
-  flex: 1 1 0;
-  min-width: 4px;
+.cut-transport-end {
+  justify-content: flex-end;
 }
-.cut button.cut-play {
-  min-width: 64px;
-  font-size: 18px;
-  background: var(--cut-text);
-  color: #000;
+.cut-time {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font:
+    600 15px / 1.25 ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
+  font-variant-numeric: tabular-nums;
 }
-.cut button.cut-blade {
-  border-color: var(--cut-accent);
-  color: var(--cut-accent);
-}
-.cut button.cut-delete {
-  border-color: var(--cut-danger);
-  color: var(--cut-danger);
+.cut-time-total {
+  color: var(--muted);
+  font-weight: 400;
 }
 
+/* ── Resize grabber ──────────────────────────────────── */
+.cut-grabber {
+  display: grid;
+  place-items: center;
+  height: 16px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.cut-grabber span {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: #34353d;
+}
+
+/* ── Timeline ────────────────────────────────────────── */
 .cut-tl {
   position: relative;
   flex: 0 0 auto;
-  background: var(--cut-bg);
-  padding-bottom: env(safe-area-inset-bottom);
-}
-.cut-zoom {
-  position: absolute;
-  right: 10px;
-  top: 4px;
-  z-index: 3;
-  display: flex;
-  gap: 6px;
-}
-.cut .cut-zoom button {
-  min-width: 36px;
-  min-height: 30px;
-  padding: 0;
-  opacity: 0.85;
 }
 .cut-scroll {
   position: absolute;
@@ -168,40 +232,65 @@
 .cut-scroll::-webkit-scrollbar {
   display: none;
 }
+.cut-scroll.is-trimming {
+  overflow-x: hidden;
+}
 .cut-inner {
   position: relative;
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .cut-ruler {
   position: relative;
-  height: 34px;
+  flex: 0 0 auto;
 }
 .cut-tick {
   position: absolute;
-  top: 10px;
+  top: 4px;
+  transform: translateX(-50%);
   font-size: 11px;
-  color: var(--cut-dim);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
-  border-left: 1px solid var(--cut-line);
-  padding-left: 4px;
+}
+.cut-tick::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 17px;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: 50%;
+  background: #4b4d57;
+}
+.cut-tick-mid {
+  position: absolute;
+  top: 16px;
+  width: 3px;
+  height: 10px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: #33343c;
 }
 .cut-lane {
   position: relative;
-  height: calc(100% - 46px);
-  margin-top: 4px;
+  margin-top: auto;
+  margin-bottom: auto;
 }
-.cut button.cut-clip {
+.cut-clip {
   position: absolute;
   top: 0;
   bottom: 0;
-  min-width: 0;
-  min-height: 0;
-  padding: 0;
-  border: 1px solid rgba(0, 0, 0, 0.6);
-  border-radius: 6px;
-  background-color: var(--cut-clip);
-  overflow: hidden;
+}
+.cut button.cut-clip-body {
+  position: absolute;
+  inset: 0;
   display: flex;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--surface-2);
 }
 .cut-frame {
   flex: 0 0 auto;
@@ -209,90 +298,131 @@
   background-repeat: no-repeat;
   pointer-events: none;
 }
-.cut button.cut-clip.is-selected {
-  border: 3px solid var(--cut-accent);
-  z-index: 2;
+
+/* Selected: InShot's yellow frame with chunky chevron handles. */
+.cut-clip.is-selected {
+  z-index: 3;
+}
+.cut-clip.is-selected .cut-clip-body {
+  border-radius: 0;
+  box-shadow:
+    inset 0 3px 0 var(--select),
+    inset 0 -3px 0 var(--select);
+}
+.cut-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 22px;
+  display: grid;
+  place-items: center;
+  background: var(--select);
+  color: #111;
+  touch-action: none;
+  cursor: ew-resize;
+  z-index: 4;
+}
+/* A wider invisible hit area for fingers. */
+.cut-handle::before {
+  content: "";
+  position: absolute;
+  inset: -8px -14px;
+}
+.cut-handle-in {
+  left: -22px;
+  border-radius: 10px 0 0 10px;
+}
+.cut-handle-out {
+  right: -22px;
+  border-radius: 0 10px 10px 0;
+}
+.cut-clip-dur {
+  position: absolute;
+  left: 6px;
+  top: 7px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(20, 20, 24, 0.75);
+  font:
+    600 11px / 1.3 ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
+  pointer-events: none;
 }
 .cut-playhead {
   position: absolute;
   left: 50%;
   top: 0;
   bottom: 0;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--cut-accent);
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.7);
   pointer-events: none;
-  z-index: 4;
-}
-.cut-playhead::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: -6px;
-  border: 7px solid transparent;
-  border-top-color: var(--cut-accent);
+  z-index: 5;
 }
 
-@media (max-width: 600px) {
-  .cut-count {
-    display: none;
-  }
-  /* Phones: two rows so Blade and Delete never scroll off screen. */
-  .cut-tools {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 6px;
-    overflow-x: visible;
-  }
-  .cut-spacer {
-    display: none;
-  }
-  .cut button {
-    min-width: 40px;
-    padding: 0 10px;
-  }
-  .cut button.cut-blade,
-  .cut button.cut-delete {
-    flex: 1 1 40%;
-  }
-}
-
-.cut-split {
-  flex: 0 0 auto;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  cursor: row-resize;
-  touch-action: none;
-  background: var(--cut-bg);
-}
-.cut-split span {
-  width: 44px;
-  height: 5px;
-  border-radius: 3px;
-  background: #48484a;
-}
-.cut button.cut-fs {
-  position: absolute;
-  right: 10px;
-  top: 10px;
-  z-index: 2;
-  min-width: 40px;
-  min-height: 40px;
-  padding: 0;
-  font-size: 18px;
-  background: rgba(28, 28, 30, 0.7);
-}
-.cut-viewer:fullscreen {
-  width: 100vw;
-  height: 100vh;
-}
-
-.cut-zoom {
+/* ── Tool row ────────────────────────────────────────── */
+.cut-bar {
+  display: flex;
   align-items: center;
+  gap: 4px;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  overflow-x: auto;
+  scrollbar-width: none;
 }
-.cut-zoom-slider {
-  width: clamp(90px, 22vw, 220px);
-  accent-color: var(--cut-accent);
-  height: 30px;
+.cut-bar::-webkit-scrollbar {
+  display: none;
+}
+.cut button.cut-tool {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 72px;
+  height: 64px;
+  padding: 0 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #d8d9de;
+  transition: background 0.15s;
+}
+.cut button.cut-tool:active:not(:disabled) {
+  background: var(--surface-2);
+}
+.cut button.cut-tool-back {
+  min-width: 48px;
+}
+.cut-bar-hint {
+  margin: 0 0 0 auto;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+@media (max-width: 560px) {
+  .cut-meta,
+  .cut-bar-hint {
+    display: none;
+  }
+}
+
+@media (min-width: 900px) {
+  .cut-stage {
+    padding: 8px 24px;
+  }
+  .cut-viewer {
+    border-radius: 12px;
+  }
+  .cut-transport {
+    padding: 8px 24px 0;
+  }
+  .cut-bar {
+    justify-content: center;
+  }
 }
