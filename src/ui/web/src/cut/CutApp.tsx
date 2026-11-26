@@ -1,5 +1,14 @@
 import { usePinch } from '@use-gesture/react';
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { withTimeline } from '../lib/timelines.js';
 import { applyTimelineVerbs, type Verb } from '../lib/verbs.js';
 import type { Composition } from '../types.js';
@@ -425,6 +434,8 @@ function Timeline({
   }, [pps, total, width]);
   const zoom = pps ?? 1;
   const pad = width / 2;
+  // Lane height in px: the timeline minus the ruler (34) and the lane's top margin (4).
+  const laneHeight = Math.max(20, height - 46);
 
   // Keep the playhead under the fixed centre line.
   useLayoutEffect(() => {
@@ -536,6 +547,7 @@ function Timeline({
                 seg={s}
                 left={pad + s.start * zoom}
                 width={(s.end - s.start) * zoom}
+                laneHeight={laneHeight}
                 selected={s.clipId === selected}
                 onSelect={onSelect}
               />
@@ -555,7 +567,9 @@ function Timeline({
 const STRIP_SLOTS = 2;
 let stripsInFlight = 0;
 const stripQueue: (() => void)[] = [];
-const loadedStrips = new Set<string>();
+/** Loaded strips → aspect ratio (width / height) of one frame in them. */
+const loadedStrips = new Map<string, number>();
+const STRIP_FRAMES = 12;
 
 function loadStrip(url: string): Promise<void> {
   if (loadedStrips.has(url)) return Promise.resolve();
@@ -565,7 +579,9 @@ function loadStrip(url: string): Promise<void> {
       const img = new Image();
       img.onload = img.onerror = () => {
         stripsInFlight--;
-        loadedStrips.add(url);
+        const aspect =
+          img.naturalHeight > 0 ? img.naturalWidth / STRIP_FRAMES / img.naturalHeight : 16 / 9;
+        loadedStrips.set(url, aspect);
         stripQueue.shift()?.();
         done();
       };
@@ -576,46 +592,76 @@ function loadStrip(url: string): Promise<void> {
   });
 }
 
-function useStrip(mediaId: string): string | null {
+function useStrip(mediaId: string): { url: string; aspect: number } | null {
   const url = `/api/media/strip?mediaId=${encodeURIComponent(mediaId)}`;
-  const [ready, setReady] = useState(() => loadedStrips.has(url));
+  const [aspect, setAspect] = useState(() => loadedStrips.get(url) ?? null);
   useEffect(() => {
     let alive = true;
-    void loadStrip(url).then(() => alive && setReady(true));
+    void loadStrip(url).then(() => alive && setAspect(loadedStrips.get(url) ?? 16 / 9));
     return () => {
       alive = false;
     };
   }, [url]);
-  return ready ? url : null;
+  return aspect === null ? null : { url, aspect };
 }
 
+/**
+ * A clip on the timeline, Final Cut style: whole frames at their true shape,
+ * as many as fit side by side, each cropped to its slot rather than squashed.
+ * A narrow clip shows one frame from its middle.
+ */
 const ClipBlock = memo(function ClipBlock({
   seg,
   left,
   width,
+  laneHeight,
   selected,
   onSelect,
 }: {
   seg: Segment;
   left: number;
   width: number;
+  laneHeight: number;
   selected: boolean;
   onSelect: (id: string | null) => void;
 }) {
   const strip = useStrip(seg.mediaId);
+  const w = Math.max(2, width - 1);
+  const frameW = laneHeight * (strip?.aspect ?? 16 / 9);
+  const slots = Math.max(1, Math.min(STRIP_FRAMES, Math.round(w / frameW)));
+  const slotW = w / slots;
+  const tiles: { key: number; style: CSSProperties }[] = [];
+  if (strip && w > 4) {
+    for (let i = 0; i < slots; i++) {
+      const frame = Math.min(
+        STRIP_FRAMES - 1,
+        Math.floor(((i + 0.5) / slots) * STRIP_FRAMES),
+      );
+      tiles.push({
+        key: i,
+        style: {
+          width: slotW,
+          backgroundImage: `url("${strip.url}")`,
+          backgroundSize: `${frameW * STRIP_FRAMES}px ${laneHeight}px`,
+          // Centre the chosen frame in its slot; the slot crops the rest.
+          backgroundPositionX: -(frame * frameW) + (slotW - frameW) / 2,
+        },
+      });
+    }
+  }
   return (
     <button
       type="button"
       className={`cut-clip${selected ? ' is-selected' : ''}`}
-      style={{
-        left,
-        width: Math.max(2, width - 1),
-        backgroundImage: strip ? `url("${strip}")` : undefined,
-      }}
+      style={{ left, width: w }}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(selected ? null : seg.clipId);
       }}
-    />
+    >
+      {tiles.map((t) => (
+        <span key={t.key} className="cut-frame" style={t.style} />
+      ))}
+    </button>
   );
 });

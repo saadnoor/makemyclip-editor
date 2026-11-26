@@ -200,9 +200,14 @@
   border: 1px solid rgba(0, 0, 0, 0.6);
   border-radius: 6px;
   background-color: var(--cut-clip);
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
   overflow: hidden;
+  display: flex;
+}
+.cut-frame {
+  flex: 0 0 auto;
+  height: 100%;
+  background-repeat: no-repeat;
+  pointer-events: none;
 }
 .cut button.cut-clip.is-selected {
   border: 3px solid var(--cut-accent);
@@ -232,8 +237,23 @@
   .cut-count {
     display: none;
   }
+  /* Phones: two rows so Blade and Delete never scroll off screen. */
   .cut-tools {
+    flex-wrap: wrap;
+    justify-content: center;
     gap: 6px;
+    overflow-x: visible;
+  }
+  .cut-spacer {
+    display: none;
+  }
+  .cut button {
+    min-width: 40px;
+    padding: 0 10px;
+  }
+  .cut button.cut-blade,
+  .cut button.cut-delete {
+    flex: 1 1 40%;
   }
 }
 
