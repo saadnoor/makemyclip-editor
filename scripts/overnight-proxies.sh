@@ -66,7 +66,7 @@ while IFS=$'\t' read -r month rel; do
     year=${month%%-*}; name=${rel#*/}
     log "== $month  ←  $year/$name"
     "$HERE/run-prepare-month.sh" "$ARCHIVE/$year/$name" "$month" < /dev/null 2>&1 | grep -v "libva info" | tail -3
-    if [[ -f "$WS/timelines/$month.json" ]]; then
+    if [[ -f "$WS/timelines/$month/composition.json" ]]; then
       log "   $month already has a timeline — kept as is (proxies topped up only)"
     else
       "$HERE/import-month.sh" "$month" 25 < /dev/null 2>&1 | tail -1

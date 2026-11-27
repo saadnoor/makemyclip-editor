@@ -15,6 +15,13 @@ WS=${MAKEMYCLIP_WORKSPACE:?set MAKEMYCLIP_WORKSPACE}
 DIR="$WS/$MONTH"
 CLI="node $(cd "$(dirname "$0")/.." && pwd)/dist/cli.js"
 
+# Never rebuild a month that already has a timeline: that wipes its edits and
+# their undo history. FORCE=1 overrides, deliberately.
+if [[ -f "$WS/timelines/$MONTH/composition.json" && "${FORCE:-}" != 1 ]]; then
+  echo "timeline $MONTH already exists — not rebuilding it (FORCE=1 to wipe and rebuild)" >&2
+  exit 3
+fi
+
 cd "$WS"
 $CLI timeline new --timeline "$MONTH" --width 3840 --height 2160 --fps "$FPS" >/dev/null
 n=0

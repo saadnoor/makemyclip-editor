@@ -86,12 +86,15 @@ export function ProgressApp() {
   const done = months.reduce((s, m) => s + Math.min(m.done, m.total), 0);
   const ready = months.filter((m) => m.total > 0 && m.done >= m.total).length;
   const known = months.filter((m) => m.total > 0).length;
-  const pct = total ? Math.round((done / total) * 100) : 0;
+
   const working = months.flatMap((m) => m.working.map((w) => ({ ...w, month: m.month })));
   const macBusy = working.some((w) => w.who === 'mac');
   // Months not scanned yet have no clip count; assume they're like the average so far.
   const avg = known ? total / known : 0;
   const unknownClips = (months.length - known) * avg;
+  // Unscanned months count as average-sized, so % covers the whole plan.
+  const expected = total + unknownClips;
+  const pct = expected ? Math.min(100, Math.floor((done / expected) * 100)) : 0;
   const eta = data?.clipsPerHour ? (total - done + unknownClips) / data.clipsPerHour : Number.NaN;
   const sizeSoFar = months.reduce((s, m) => s + m.bytes, 0);
 

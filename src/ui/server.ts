@@ -662,7 +662,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
         cpuDone,
         bytes,
         working,
-        imported: existsSync(resolve(ws, 'timelines', `${month}.json`)),
+        imported: existsSync(resolve(ws, 'timelines', month, 'composition.json')),
       });
     }
     const log = (await readText(resolve(ws, 'overnight.log')))
