@@ -289,7 +289,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
   const app = new Hono();
 
   // Token gate (only when a token is configured). `/?token=…` sets a
-  // SameSite=Strict HttpOnly cookie and redirects to strip the token from the
+  // SameSite=Lax HttpOnly cookie and redirects to strip the token from the
   // URL; after that every request (pages, API, media) must carry the cookie or
   // an `Authorization: Bearer <token>` header. A DNS-rebinding page is a
   // different site, so the browser never sends it the cookie.
@@ -301,7 +301,7 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
         if (!matchesDigest(queryToken, tokenDigest)) return c.text('Wrong token.', 401);
         setCookie(c, AUTH_COOKIE, cookieValue, {
           httpOnly: true,
-          sameSite: 'Strict',
+          sameSite: 'Lax',
           path: '/',
           maxAge: 60 * 60 * 24 * 90,
         });

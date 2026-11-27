@@ -73,7 +73,7 @@ describe('clip ui LAN access', () => {
     expect(login.headers.location).toBe('/');
     const setCookie = String(login.headers['set-cookie']);
     expect(setCookie).toMatch(/HttpOnly/);
-    expect(setCookie).toMatch(/SameSite=Strict/);
+    expect(setCookie).toMatch(/SameSite=Lax/);
     expect(setCookie).not.toContain(TOKEN);
     const cookie = setCookie.split(';')[0] ?? '';
     const reply = await send(server.port, '/api/workspace', {
