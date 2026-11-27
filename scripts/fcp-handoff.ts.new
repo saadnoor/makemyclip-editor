@@ -1,0 +1,105 @@
+Checked 1 file in 349ms. No fixes applied.
+/**
+ * Hand a month's edit to Final Cut Pro on the ORIGINAL footage.
+ *
+ *   tsx scripts/fcp-handoff.ts <YYYY-MM> <archive root> <target root>
+ *
+ * The month's timeline is cut on 540p proxies; prepare-month.sh's manifest.tsv
+ * maps each proxy back to its original. This probes the originals the edit uses
+ * (size, rate, timecode — what Final Cut matches media by) and writes an FCPXML
+ * whose assets point at where those originals will sit on the Mac:
+ * <target root>/<path relative to archive root>. It also writes
+ * originals.txt, the same relative paths, for `rsync --files-from`.
+ *
+ * Output goes to $MAKEMYCLIP_WORKSPACE/<YYYY-MM>/handoff/.
+ */
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join, relative } from 'node:path';
+import { execa } from 'execa';
+import { parseProbeOutput, parseTimecode } from '../src/ffmpeg/probe.js';
+import { resolveFfmpeg } from '../src/ffmpeg/run.js';
+import { readComposition } from '../src/timeline/document-store.js';
+import { buildInterchange } from '../src/timeline/interchange.js';
+import type { InterchangeMedia } from '../src/timeline/interchange-layout.js';
+import { buildMediaRefs } from '../src/timeline/media-registry.js';
+import type { MediaId } from '../src/timeline/schema.js';
+import { getWorkspace } from '../src/workspace.js';
+
+/**
+ * Size, rate, duration and start timecode from the container header alone.
+ * The editor's `probe` decodes the whole file, which on a NAS CPU takes longer
+ * than the clip for 4K originals.
+ */
+async function headerProbe(path: string) {
+  const { stderr } = await execa(resolveFfmpeg().path, ['-hide_banner', '-i', path], {
+    reject: false,
+    env: { ...process.env, LC_ALL: 'C' },
+  });
+  return { ...parseProbeOutput(stderr), timecode: parseTimecode(stderr) };
+}
+
+async function main(): Promise<void> {
+  const [month, archiveRoot, targetRoot] = process.argv.slice(2);
+  if (!month || !archiveRoot || !targetRoot) {
+    throw new Error('Usage: fcp-handoff.ts <YYYY-MM> <archive root> <target root>');
+  }
+  const monthDir = join(getWorkspace(), month);
+
+  // proxy file name → original path
+  const originals = new Map<string, string>();
+  const manifest = await readFile(join(monthDir, 'manifest.tsv'), 'utf8');
+  for (const line of manifest.split('\n').slice(1)) {
+    const [proxy, , , original] = line.split('\t');
+    if (proxy && original) originals.set(proxy, original);
+  }
+
+  const comp = await readComposition(month);
+  const refs = await buildMediaRefs();
+  const used = new Set<MediaId>();
+  for (const track of comp.tracks) {
+    for (const clip of track.clips) if (clip.kind === 'media') used.add(clip.mediaId);
+  }
+
+  const media = new Map<MediaId, InterchangeMedia>();
+  const toCopy: string[] = [];
+  for (const id of used) {
+    const proxyRef = refs.get(id);
+    if (!proxyRef) throw new Error(`No media record for ${id}.`);
+    const name = proxyRef.path.split('/').pop() ?? '';
+    const original = originals.get(name);
+    if (!original) throw new Error(`${name} is not in ${month}/manifest.tsv.`);
+    const rel = relative(archiveRoot, original);
+    if (rel.startsWith('..')) throw new Error(`${original} is outside ${archiveRoot}.`);
+    const { durationSec, video, audio, timecode } = await headerProbe(original);
+    if (!durationSec) throw new Error(`Could not read ${original}.`);
+    if (Math.abs(durationSec - proxyRef.durationSec) > 0.1) {
+      process.stderr.write(
+        `warning: ${rel} is ${durationSec}s but its proxy is ${proxyRef.durationSec}s; cuts may drift.\n`,
+      );
+    }
+    media.set(id, {
+      path: join(targetRoot, rel),
+      durationSec,
+      video,
+      audio,
+      timecode: video ? timecode : null,
+    });
+    toCopy.push(rel);
+  }
+
+  const outDir = join(monthDir, 'handoff');
+  await mkdir(outDir, { recursive: true });
+  const output = join(outDir, `${month}.fcpxml`);
+  const built = buildInterchange(comp, media, { format: 'fcpxml', output });
+  for (const file of built.files) await writeFile(file.path, file.content);
+  await writeFile(join(outDir, 'originals.txt'), `${[...new Set(toCopy)].sort().join('\n')}\n`);
+
+  process.stdout.write(
+    `${JSON.stringify({ fcpxml: output, originals: toCopy.length, durationSec: built.durationSec, notes: built.notes })}\n`,
+  );
+}
+
+main().catch((err: unknown) => {
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});
