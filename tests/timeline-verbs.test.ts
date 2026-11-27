@@ -101,7 +101,15 @@ describe('lowerVerb', () => {
     ).toEqual([{ op: 'setTrim', clipId: 'c1', sourceInSec: 1, sourceOutSec: 3 }]);
     expect(
       await lowerVerb(empty, { verb: 'move', clipId: 'c1', startSec: 2, toTrack: 'v1' }, ctx()),
-    ).toEqual([{ op: 'moveClip', clipId: 'c1', startSec: 2, toTrackId: 'v1' }]);
+    ).toEqual([
+      // v1 doesn't exist in the empty doc, so the move makes it.
+      { op: 'addTrack', track: videoTrack({ id: 'v1' }) },
+      { op: 'moveClip', clipId: 'c1', startSec: 2, toTrackId: 'v1' },
+    ]);
+    const withV1 = applyOps(empty, [{ op: 'addTrack', track: videoTrack({ id: 'v1' }) }]);
+    expect(await lowerVerb(withV1, { verb: 'move', clipId: 'c1', toTrack: 'v1' }, ctx())).toEqual([
+      { op: 'moveClip', clipId: 'c1', toTrackId: 'v1' },
+    ]);
     expect(await lowerVerb(empty, { verb: 'remove', clipId: 'c1' }, ctx())).toEqual([
       { op: 'removeClip', clipId: 'c1' },
     ]);

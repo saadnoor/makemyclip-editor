@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Expand,
+  Layers,
   Pause,
   Play,
   Redo2,
@@ -28,7 +29,16 @@ import {
 import { withTimeline } from '../lib/timelines.js';
 import { applyTimelineVerbs, type Verb } from '../lib/verbs.js';
 import type { Composition } from '../types.js';
-import { editPoints, type Segment, segmentAt, segmentsOf } from './segments.js';
+import {
+  editPoints,
+  LAYER_TRACK,
+  layersOf,
+  mainTrack,
+  type Segment,
+  segmentAt,
+  segmentsOf,
+} from './segments.js';
+import { useLayerPlayer } from './useLayerPlayer.js';
 import { usePlayer } from './usePlayer.js';
 import './cut.css';
 
@@ -121,7 +131,12 @@ function withDraft(segs: Segment[], draft: TrimDraft | null): Segment[] {
  */
 function trimVerbs(segs: Segment[], draft: TrimDraft): Verb[] {
   const target = segs.find((s) => s.clipId === draft.clipId);
-  if (!target) return [];
+  // A layer clip: trimming it moves nothing else.
+  if (!target) {
+    return [
+      { verb: 'trim', clipId: draft.clipId, sourceInSec: draft.srcIn, sourceOutSec: draft.srcOut },
+    ];
+  }
   const shift = (draft.srcOut - draft.srcIn) / target.speed - (target.end - target.start);
   const later = segs.filter((s) => s.start >= target.end - 1e-3);
   const trim: Verb = {
@@ -134,6 +149,39 @@ function trimVerbs(segs: Segment[], draft: TrimDraft): Verb[] {
     (s): Verb => ({ verb: 'move', clipId: s.clipId, startSec: s.start + shift }),
   );
   return shift > 0 ? [...moves.reverse(), trim] : [trim, ...moves];
+}
+
+/** A layer's clips with `draft` applied to the one being trimmed (no ripple). */
+function withLayerDraft(segs: Segment[], draft: TrimDraft | null): Segment[] {
+  if (!draft) return segs;
+  return segs.map((s) =>
+    s.clipId === draft.clipId
+      ? {
+          ...s,
+          srcIn: draft.srcIn,
+          srcOut: draft.srcOut,
+          end: s.start + (draft.srcOut - draft.srcIn) / s.speed,
+        }
+      : s,
+  );
+}
+
+/** Where a dragged clip is dropped: a slot in the main track, or a time on a layer. */
+export type DropTarget = { lane: 'main'; index: number } | { lane: string; start: number };
+
+/** Verbs that re-lay `order` end to end from 0 (the magnetic main track). */
+function reflow(order: Segment[], mainId: string, movedId: string, fromLayer: boolean): Verb[] {
+  const verbs: Verb[] = [];
+  let t = 0;
+  for (const s of order) {
+    if (s.clipId === movedId && fromLayer) {
+      verbs.push({ verb: 'move', clipId: s.clipId, startSec: t, toTrack: mainId });
+    } else if (Math.abs(s.start - t) > 1e-6) {
+      verbs.push({ verb: 'move', clipId: s.clipId, startSec: t });
+    }
+    t += s.end - s.start;
+  }
+  return verbs;
 }
 
 /**
@@ -195,7 +243,16 @@ export function CutApp() {
 
   const segs = useMemo(() => (doc ? segmentsOf(doc) : []), [doc]);
   const shown = useMemo(() => withDraft(segs, draft), [segs, draft]);
+  const layers = useMemo(() => (doc ? layersOf(doc) : []), [doc]);
+  const layerSegs = useMemo(() => layers.flatMap((l) => l.segs), [layers]);
+  const shownLayers = useMemo(
+    () => layers.map((l) => ({ ...l, segs: withLayerDraft(l.segs, draft) })),
+    [layers, draft],
+  );
+  const allSegs = useMemo(() => [...segs, ...layerSegs], [segs, layerSegs]);
+  const mainId = doc ? (mainTrack(doc)?.id ?? 'v0') : 'v0';
   const player = usePlayer(segs);
+  const layer = useLayerPlayer(layerSegs, player.time, player.playing);
   const fps = doc?.fps ?? 25;
 
   const apply = useCallback(
@@ -232,15 +289,25 @@ export function CutApp() {
   );
 
   const split = useCallback(() => {
-    const seg = segmentAt(segs, player.time);
+    // A selected layer clip under the playhead is split; otherwise the main track.
+    const picked = layerSegs.find((s) => s.clipId === selected);
+    const seg =
+      picked && player.time > picked.start && player.time < picked.end
+        ? picked
+        : segmentAt(segs, player.time);
     if (!seg) return;
     if (player.time - seg.start < 1 / fps || seg.end - player.time < 1 / fps) return;
     void apply([{ verb: 'split', clipId: seg.clipId, atSec: player.time }]);
-  }, [apply, fps, player.time, segs]);
+  }, [apply, fps, layerSegs, player.time, segs, selected]);
 
   const remove = useCallback(() => {
-    const target = segs.find((s) => s.clipId === selected) ?? segmentAt(segs, player.time);
+    const target = allSegs.find((s) => s.clipId === selected) ?? segmentAt(segs, player.time);
     if (!target) return;
+    if (target.trackId !== mainId) {
+      setSelected(null);
+      void apply([{ verb: 'remove', clipId: target.clipId }]);
+      return;
+    }
     const gap = target.end - target.start;
     const later = segs.filter((s) => s.start >= target.end - 1e-3);
     setSelected(null);
@@ -248,7 +315,7 @@ export function CutApp() {
       { verb: 'remove', clipId: target.clipId },
       ...later.map((s): Verb => ({ verb: 'move', clipId: s.clipId, startSec: s.start - gap })),
     ]);
-  }, [apply, player.time, segs, selected]);
+  }, [allSegs, apply, mainId, player.time, segs, selected]);
 
   const jumpEdit = useCallback(
     (dir: 1 | -1) => {
@@ -263,15 +330,15 @@ export function CutApp() {
 
   const trimStart = useCallback(
     (clipId: string) => {
-      const seg = segs.find((s) => s.clipId === clipId);
+      const seg = allSegs.find((s) => s.clipId === clipId);
       if (seg) setDraft({ clipId, srcIn: seg.srcIn, srcOut: seg.srcOut });
     },
-    [segs],
+    [allSegs],
   );
 
   const trimMove = useCallback(
     (clipId: string, edge: 'in' | 'out', deltaSec: number) => {
-      const seg = segs.find((s) => s.clipId === clipId);
+      const seg = allSegs.find((s) => s.clipId === clipId);
       if (!seg) return;
       const dsrc = deltaSec * seg.speed;
       const minSrc = MIN_CLIP * seg.speed;
@@ -291,7 +358,7 @@ export function CutApp() {
       setDraft(next);
       player.peek(seg, edge === 'in' ? next.srcIn : Math.max(next.srcIn, next.srcOut - 1 / fps));
     },
-    [durations, fps, player, segs],
+    [allSegs, durations, fps, player],
   );
 
   const draftRef = useRef<TrimDraft | null>(null);
@@ -299,7 +366,7 @@ export function CutApp() {
   const trimEnd = useCallback(() => {
     const d = draftRef.current;
     if (!d) return;
-    const seg = segs.find((s) => s.clipId === d.clipId);
+    const seg = allSegs.find((s) => s.clipId === d.clipId);
     const changed =
       seg && (Math.abs(seg.srcIn - d.srcIn) > 1e-3 || Math.abs(seg.srcOut - d.srcOut) > 1e-3);
     if (!changed) {
@@ -308,7 +375,42 @@ export function CutApp() {
     }
     // Keep showing the draft until the saved document replaces it.
     void apply(trimVerbs(segs, d)).then(() => setDraft(null));
-  }, [apply, segs]);
+  }, [allSegs, apply, segs]);
+
+  const drop = useCallback(
+    (clipId: string, target: DropTarget) => {
+      const seg = allSegs.find((s) => s.clipId === clipId);
+      if (!seg) return;
+      const fromMain = seg.trackId === mainId;
+      if (target.lane === 'main') {
+        const index = (target as { index: number }).index;
+        const rest = segs.filter((s) => s.clipId !== clipId);
+        const order = [...rest.slice(0, index), seg, ...rest.slice(index)];
+        void apply(reflow(order, mainId, clipId, !fromMain));
+        return;
+      }
+      const start = Math.max(0, (target as { start: number }).start);
+      const verbs: Verb[] = [
+        {
+          verb: 'move',
+          clipId,
+          startSec: start,
+          ...(seg.trackId !== target.lane ? { toTrack: target.lane } : {}),
+        },
+      ];
+      if (fromMain) {
+        // Lifting a clip off the main track closes its gap.
+        const gap = seg.end - seg.start;
+        for (const s of segs) {
+          if (s.start >= seg.end - 1e-3) {
+            verbs.push({ verb: 'move', clipId: s.clipId, startSec: s.start - gap });
+          }
+        }
+      }
+      void apply(verbs);
+    },
+    [allSegs, apply, mainId, segs],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -412,6 +514,14 @@ export function CutApp() {
               preload="auto"
             />
           ))}
+          <video
+            ref={layer.ref}
+            className="cut-video cut-layer"
+            style={{ opacity: layer.visible ? 1 : 0 }}
+            muted
+            playsInline
+            preload="auto"
+          />
           {!doc ? <div className="cut-msg">Loading…</div> : null}
           {doc && segs.length === 0 ? <div className="cut-msg">No clips this month</div> : null}
           <button
@@ -515,6 +625,8 @@ export function CutApp() {
       <Timeline
         height={tlHeight}
         segs={shown}
+        layers={shownLayers}
+        onDrop={drop}
         time={player.time}
         playing={player.playing}
         selected={selected}
@@ -549,16 +661,31 @@ export function CutApp() {
           <span>Delete</span>
         </button>
         <p className="cut-bar-hint">
-          {selected ? 'Drag the yellow handles to trim' : 'Tap a clip to select · pinch to zoom'}
+          {selected
+            ? 'Drag the yellow handles to trim'
+            : 'Hold a clip to move it · drag it up to layer it'}
         </p>
       </nav>
     </div>
   );
 }
 
+/** A clip being dragged: what it is, where the finger is, where it would land. */
+interface DragState {
+  seg: Segment;
+  x: number;
+  y: number;
+  /** Seconds between the clip's start and the point it was grabbed at. */
+  grab: number;
+  target: DropTarget | null;
+}
+
+const LONG_PRESS_MS = 320;
+
 function Timeline({
   height,
   segs,
+  layers,
   time,
   playing,
   selected,
@@ -568,9 +695,11 @@ function Timeline({
   onTrimStart,
   onTrimMove,
   onTrimEnd,
+  onDrop,
 }: {
   height: number;
   segs: Segment[];
+  layers: { trackId: string; segs: Segment[] }[];
   time: number;
   playing: boolean;
   selected: string | null;
@@ -580,11 +709,19 @@ function Timeline({
   onTrimStart: (clipId: string) => void;
   onTrimMove: (clipId: string, edge: 'in' | 'out', deltaSec: number) => void;
   onTrimEnd: () => void;
+  onDrop: (clipId: string, target: DropTarget) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  const inner = useRef<HTMLDivElement>(null);
+  const mainLane = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
-  const total = segs.reduce((m, s) => Math.max(m, s.end), 0);
+  const layerEnd = layers.reduce((m, l) => Math.max(m, ...l.segs.map((s) => s.end)), 0);
+  const total = Math.max(
+    segs.reduce((m, s) => Math.max(m, s.end), 0),
+    layerEnd,
+  );
   const [pps, setPps] = useState<number | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
   const programmatic = useRef(false);
   const touching = useRef(false);
 
@@ -607,18 +744,26 @@ function Timeline({
     store('cut.pps', v);
   }, []);
   const pad = width / 2;
-  const laneHeight = Math.max(36, Math.min(72, height - RULER_H - 24));
+  // Always one empty layer lane on top to drop onto (InShot's "add layer").
+  const lanes = [...layers];
+  if (!lanes.some((l) => l.segs.length === 0)) {
+    let n = lanes.length + 1;
+    while (lanes.some((l) => l.trackId === `layer-${n}`)) n++;
+    lanes.push({ trackId: lanes.length === 0 ? LAYER_TRACK : `layer-${n}`, segs: [] });
+  }
+  const available = height - RULER_H - 16;
+  const mainH = Math.max(36, Math.min(72, available * 0.55));
+  const layerH = Math.max(26, Math.min(48, (available - mainH) / lanes.length - 6));
 
-  // Keep the playhead under the fixed centre line (not while a trim holds it still).
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (!el || touching.current || trimming) return;
+    if (!el || touching.current || trimming || drag) return;
     const target = time * zoom;
     if (Math.abs(el.scrollLeft - target) > 0.5) {
       programmatic.current = true;
       el.scrollLeft = target;
     }
-  }, [time, zoom, trimming]);
+  }, [time, zoom, trimming, drag]);
 
   usePinch(({ offset: [scale] }) => setZoom(scale), {
     target: scroller,
@@ -630,13 +775,71 @@ function Timeline({
 
   const onScroll = () => {
     const el = scroller.current;
-    if (!el || trimming) return;
+    if (!el || trimming || drag) return;
     if (programmatic.current) {
       programmatic.current = false;
       return;
     }
     if (playing && !touching.current) return;
     onScrub(el.scrollLeft / zoom);
+  };
+
+  /** Timeline seconds under a screen x. */
+  const secAt = (clientX: number) => {
+    const left = inner.current?.getBoundingClientRect().left ?? 0;
+    return (clientX - left - pad) / zoom;
+  };
+
+  const targetAt = (seg: Segment, grab: number, x: number, y: number): DropTarget | null => {
+    const sec = secAt(x);
+    const main = mainLane.current?.getBoundingClientRect();
+    if (main && y >= main.top - 12) {
+      // The slot whose clips' midpoints lie before the finger.
+      const others = segs.filter((s) => s.clipId !== seg.clipId);
+      const index = others.filter((s) => (s.start + s.end) / 2 < sec).length;
+      return { lane: 'main', index };
+    }
+    for (const lane of lanes) {
+      const el = inner.current?.querySelector<HTMLElement>(`[data-lane="${lane.trackId}"]`);
+      const r = el?.getBoundingClientRect();
+      if (r && y >= r.top - 6 && y <= r.bottom + 6)
+        return { lane: lane.trackId, start: sec - grab };
+    }
+    return null;
+  };
+
+  const startDrag = (seg: Segment, x: number, y: number) => {
+    const grab = Math.max(0, Math.min(seg.end - seg.start, secAt(x) - seg.start));
+    navigator.vibrate?.(12);
+    onSelect(null);
+    setDrag({ seg, x, y, grab, target: targetAt(seg, grab, x, y) });
+    // Hold the page still while dragging (iOS ignores touch-action set mid-gesture).
+    const block = (e: TouchEvent) => e.preventDefault();
+    const move = (e: PointerEvent) =>
+      setDrag((d) =>
+        d
+          ? {
+              ...d,
+              x: e.clientX,
+              y: e.clientY,
+              target: targetAt(d.seg, d.grab, e.clientX, e.clientY),
+            }
+          : d,
+      );
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      document.removeEventListener('touchmove', block);
+      setDrag((d) => {
+        if (d?.target) onDrop(d.seg.clipId, d.target);
+        return null;
+      });
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    document.addEventListener('touchmove', block, { passive: false });
   };
 
   const tick = tickStep(zoom);
@@ -649,10 +852,39 @@ function Timeline({
     }, 500);
   };
 
+  // Where the insertion bar sits for a drop into the main track.
+  let insertX: number | null = null;
+  if (drag?.target?.lane === 'main') {
+    const others = segs.filter((s) => s.clipId !== drag.seg.clipId);
+    const i = (drag.target as { index: number }).index;
+    // After the drop the track is re-laid end to end: the slot starts where
+    // the clips before it end.
+    const at = others.slice(0, i).reduce((sum, s) => sum + (s.end - s.start), 0);
+    insertX = pad + Math.max(0, at) * zoom;
+  }
+
+  const renderClip = (s: Segment, h: number) => (
+    <ClipBlock
+      key={s.clipId}
+      seg={s}
+      left={pad + s.start * zoom}
+      width={(s.end - s.start) * zoom}
+      laneHeight={h}
+      zoom={zoom}
+      selected={s.clipId === selected}
+      lifted={drag?.seg.clipId === s.clipId}
+      onSelect={onSelect}
+      onTrimStart={onTrimStart}
+      onTrimMove={onTrimMove}
+      onTrimEnd={onTrimEnd}
+      onLongPress={startDrag}
+    />
+  );
+
   return (
     <div className="cut-tl" style={{ height }}>
       <div
-        className={`cut-scroll${trimming ? ' is-trimming' : ''}`}
+        className={`cut-scroll${trimming || drag ? ' is-trimming' : ''}`}
         ref={scroller}
         onScroll={onScroll}
         onPointerDown={() => {
@@ -669,7 +901,7 @@ function Timeline({
           release();
         }}
       >
-        <div className="cut-inner" style={{ width: total * zoom + width }}>
+        <div className="cut-inner" ref={inner} style={{ width: total * zoom + width }}>
           <div className="cut-ruler" style={{ height: RULER_H }}>
             {ticks.map((t) => (
               <span key={t} className="cut-tick" style={{ left: pad + t * zoom }}>
@@ -684,26 +916,55 @@ function Timeline({
               />
             ))}
           </div>
-          <div className="cut-lane" style={{ height: laneHeight }}>
-            {segs.map((s) => (
-              <ClipBlock
-                key={s.clipId}
-                seg={s}
-                left={pad + s.start * zoom}
-                width={(s.end - s.start) * zoom}
-                laneHeight={laneHeight}
-                zoom={zoom}
-                selected={s.clipId === selected}
-                onSelect={onSelect}
-                onTrimStart={onTrimStart}
-                onTrimMove={onTrimMove}
-                onTrimEnd={onTrimEnd}
-              />
+          <div className="cut-lanes">
+            {[...lanes].reverse().map((lane) => (
+              <div
+                key={lane.trackId}
+                data-lane={lane.trackId}
+                className={`cut-lane cut-layer-lane${lane.segs.length === 0 ? ' is-empty' : ''}${drag?.target?.lane === lane.trackId ? ' is-target' : ''}`}
+                style={{ height: layerH }}
+              >
+                {lane.segs.length === 0 && !drag ? (
+                  <span className="cut-lane-hint" style={{ left: pad + time * zoom + 8 }}>
+                    <Layers size={14} aria-hidden /> Hold a clip and drag it here to layer
+                  </span>
+                ) : null}
+                {lane.segs.map((s) => renderClip(s, layerH))}
+                {drag?.target?.lane === lane.trackId ? (
+                  <span
+                    className="cut-drop-ghost"
+                    style={{
+                      left: pad + Math.max(0, (drag.target as { start: number }).start) * zoom,
+                      width: (drag.seg.end - drag.seg.start) * zoom,
+                    }}
+                  />
+                ) : null}
+              </div>
             ))}
+            <div
+              className={`cut-lane cut-main-lane${drag?.target?.lane === 'main' ? ' is-target' : ''}`}
+              ref={mainLane}
+              style={{ height: mainH }}
+            >
+              {segs.map((s) => renderClip(s, mainH))}
+              {insertX !== null ? <span className="cut-insert" style={{ left: insertX }} /> : null}
+            </div>
           </div>
         </div>
       </div>
       <div className="cut-playhead" />
+      {drag ? (
+        <div
+          className="cut-drag-ghost"
+          style={{
+            left: drag.x,
+            top: drag.y,
+            width: Math.min(160, Math.max(56, (drag.seg.end - drag.seg.start) * zoom)),
+          }}
+        >
+          {(drag.seg.end - drag.seg.start).toFixed(1)}s
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -765,10 +1026,12 @@ const ClipBlock = memo(function ClipBlock({
   laneHeight,
   zoom,
   selected,
+  lifted,
   onSelect,
   onTrimStart,
   onTrimMove,
   onTrimEnd,
+  onLongPress,
 }: {
   seg: Segment;
   left: number;
@@ -776,12 +1039,15 @@ const ClipBlock = memo(function ClipBlock({
   laneHeight: number;
   zoom: number;
   selected: boolean;
+  lifted: boolean;
+  onLongPress: (seg: Segment, x: number, y: number) => void;
   onSelect: (id: string | null) => void;
   onTrimStart: (clipId: string) => void;
   onTrimMove: (clipId: string, edge: 'in' | 'out', deltaSec: number) => void;
   onTrimEnd: () => void;
 }) {
   const strip = useStrip(seg.mediaId);
+  const longPressed = useRef(false);
   const w = Math.max(2, width - 2);
   const frameW = laneHeight * (strip?.aspect ?? 16 / 9);
   const slots = Math.max(1, Math.min(STRIP_FRAMES, Math.round(w / frameW)));
@@ -823,14 +1089,45 @@ const ClipBlock = memo(function ClipBlock({
 
   const dur = seg.end - seg.start;
   return (
-    <div className={`cut-clip${selected ? ' is-selected' : ''}`} style={{ left, width: w }}>
+    <div
+      className={`cut-clip${selected ? ' is-selected' : ''}${lifted ? ' is-lifted' : ''}`}
+      style={{ left, width: w }}
+    >
       <button
         type="button"
         className="cut-clip-body"
+        onPointerDown={(e) => {
+          // Hold still to pick the clip up; moving first means scrolling.
+          const x0 = e.clientX;
+          const y0 = e.clientY;
+          const timer = window.setTimeout(() => {
+            cleanup();
+            longPressed.current = true;
+            onLongPress(seg, x0, y0);
+          }, LONG_PRESS_MS);
+          const move = (ev: PointerEvent) => {
+            if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 8) cleanup();
+          };
+          const cleanup = () => {
+            window.clearTimeout(timer);
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', cleanup);
+            window.removeEventListener('pointercancel', cleanup);
+          };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', cleanup);
+          window.addEventListener('pointercancel', cleanup);
+        }}
+        onContextMenu={(e) => e.preventDefault()}
         aria-label={`Clip, ${dur.toFixed(1)} seconds`}
         aria-pressed={selected}
         onClick={(e) => {
           e.stopPropagation();
+          // The click that ends a long-press drag isn't a tap.
+          if (longPressed.current) {
+            longPressed.current = false;
+            return;
+          }
           onSelect(selected ? null : seg.clipId);
         }}
       >

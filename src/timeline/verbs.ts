@@ -510,6 +510,8 @@ export async function lowerVerb(
     case 'move': {
       if (verb.startSec === undefined && verb.toTrack === undefined) return [];
       return [
+        // Moving onto a track that doesn't exist yet makes it (a new layer).
+        ...(verb.toTrack !== undefined ? ensureTrack(comp, verb.toTrack) : []),
         {
           op: 'moveClip',
           clipId: verb.clipId,

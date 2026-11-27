@@ -273,10 +273,91 @@
   border-radius: 2px;
   background: #33343c;
 }
+.cut-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: auto;
+  margin-bottom: 8px;
+}
 .cut-lane {
   position: relative;
-  margin-top: auto;
-  margin-bottom: auto;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.cut-layer-lane.is-empty {
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 0 10px,
+    transparent 10px 20px
+  );
+}
+.cut-lane.is-target {
+  background: rgba(255, 210, 63, 0.12);
+}
+.cut-lane-hint {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.cut-layer-lane .cut-clip-body {
+  outline: 1px solid rgba(120, 170, 255, 0.55);
+}
+.cut-clip.is-lifted {
+  opacity: 0.3;
+}
+.cut-drop-ghost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: 2px dashed var(--select);
+  border-radius: 4px;
+  background: rgba(255, 210, 63, 0.15);
+  pointer-events: none;
+}
+.cut-insert {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--select);
+  box-shadow: 0 0 10px var(--select);
+  z-index: 6;
+  pointer-events: none;
+}
+.cut-drag-ghost {
+  position: fixed;
+  z-index: 50;
+  height: 44px;
+  transform: translate(-50%, -120%) scale(1.05);
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--select);
+  border-radius: 8px;
+  background: rgba(35, 36, 43, 0.92);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+  font:
+    600 12px / 1 ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
+  pointer-events: none;
+}
+.cut-layer {
+  z-index: 1;
+}
+.cut button.cut-clip-body {
+  -webkit-touch-callout: none;
 }
 .cut-clip {
   position: absolute;

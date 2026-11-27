@@ -3,6 +3,7 @@ import type { Composition, MediaClip, Track } from '../types.js';
 /** One media clip as the player sees it: where it sits on the timeline and in its source. */
 export interface Segment {
   clipId: string;
+  trackId: string;
   mediaId: string;
   start: number;
   end: number;
@@ -25,15 +26,14 @@ export function mainTrack(comp: Composition): Track | undefined {
   return comp.tracks.find((t) => t.kind === 'video');
 }
 
-export function segmentsOf(comp: Composition): Segment[] {
-  const track = mainTrack(comp);
-  if (!track) return [];
+function trackSegments(track: Track): Segment[] {
   return track.clips
     .filter((c): c is MediaClip => c.kind === 'media')
     .map((c) => {
       const speed = speedOf(c);
       return {
         clipId: c.id,
+        trackId: track.id,
         mediaId: c.mediaId,
         start: c.startSec,
         end: c.startSec + (c.sourceOutSec - c.sourceInSec) / speed,
@@ -43,6 +43,23 @@ export function segmentsOf(comp: Composition): Segment[] {
       };
     })
     .sort((a, b) => a.start - b.start);
+}
+
+/** The main (magnetic) track's clips, in order. */
+export function segmentsOf(comp: Composition): Segment[] {
+  const track = mainTrack(comp);
+  return track ? trackSegments(track) : [];
+}
+
+/** The id the first layer above the main track gets. */
+export const LAYER_TRACK = 'layer-1';
+
+/** Video tracks above the main one, each with its clips: the layers. */
+export function layersOf(comp: Composition): { trackId: string; segs: Segment[] }[] {
+  const main = mainTrack(comp);
+  return comp.tracks
+    .filter((t) => t.kind === 'video' && t !== main)
+    .map((t) => ({ trackId: t.id, segs: trackSegments(t) }));
 }
 
 export function durationOf(segs: Segment[]): number {
