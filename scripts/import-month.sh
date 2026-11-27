@@ -25,8 +25,12 @@ fi
 cd "$WS"
 $CLI timeline new --timeline "$MONTH" --width 3840 --height 2160 --fps "$FPS" >/dev/null
 n=0
+declare -A seen=()
 while IFS=$'\t' read -r proxy _stamp _dur _orig; do
   [[ "$proxy" == proxy || ! -s "$DIR/$proxy" ]] && continue
+  # The same footage copied into two folders shares one proxy: add it once.
+  [[ -n "${seen[$proxy]:-}" ]] && continue
+  seen[$proxy]=1
   $CLI timeline add-media "$DIR/$proxy" --timeline "$MONTH" >/dev/null
   n=$((n + 1))
 done < "$DIR/manifest.tsv"
