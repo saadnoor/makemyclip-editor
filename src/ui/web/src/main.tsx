@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { CutApp } from './cut/CutApp.js';
+import { DuplicatesApp } from './progress/DuplicatesApp.js';
 import { ProgressApp } from './progress/ProgressApp.js';
 import './styles.css';
 
@@ -11,6 +12,7 @@ if (!root) throw new Error('No #root element');
 function Screen() {
   if (location.pathname.startsWith('/cut')) return <CutApp />;
   if (location.pathname.startsWith('/progress')) return <ProgressApp />;
+  if (location.pathname.startsWith('/duplicates')) return <DuplicatesApp />;
   return <App />;
 }
 

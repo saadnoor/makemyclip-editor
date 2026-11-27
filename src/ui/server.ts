@@ -684,6 +684,42 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
     });
   });
 
+  /**
+   * GET /api/duplicates — the last duplicate scan (scripts/scan-duplicates.sh,
+   * Czkawka's engine) as groups of identical files, biggest waste first.
+   */
+  app.get('/api/duplicates', async (c) => {
+    const dir = resolve(getWorkspace(), '.duplicates');
+    const status = JSON.parse(
+      await readFile(resolve(dir, 'status.json'), 'utf8').catch(() => '{"state":"never"}'),
+    ) as { state: string; startedAt?: number; finishedAt?: number | null };
+    const raw = await readFile(resolve(dir, 'result.json'), 'utf8').catch(() => '');
+    interface Entry {
+      path: string;
+      size: number;
+      modified_date: number;
+    }
+    const groups: { size: number; wasted: number; files: { path: string; modified: number }[] }[] =
+      [];
+    if (raw) {
+      const bySize = JSON.parse(raw) as Record<string, Entry[][]>;
+      for (const sets of Object.values(bySize)) {
+        for (const set of sets) {
+          const size = set[0]?.size ?? 0;
+          groups.push({
+            size,
+            wasted: size * (set.length - 1),
+            files: set
+              .map((f) => ({ path: f.path, modified: f.modified_date }))
+              .sort((a, b) => a.path.localeCompare(b.path)),
+          });
+        }
+      }
+      groups.sort((a, b) => b.wasted - a.wasted);
+    }
+    return c.json({ status, groups });
+  });
+
   /** GET /api/media/durations — every source's length, so the Cut screen can bound trims. */
   app.get('/api/media/durations', async (c) => {
     const out: Record<string, number> = {};
