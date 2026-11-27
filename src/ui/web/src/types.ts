@@ -46,10 +46,20 @@ export interface MediaClip extends ClipBase {
   sourceInSec: number;
   sourceOutSec: number;
 }
+export interface TextStyle {
+  fontSize: number;
+  color: string;
+  background: string | null;
+  anchor: string;
+  fontFamily?: string;
+  fontWeight?: number;
+  italic?: boolean;
+}
 export interface TextClip extends ClipBase {
   kind: 'text';
   text: string;
   durationSec: number;
+  style?: TextStyle;
 }
 export interface ColorClip extends ClipBase {
   kind: 'color';

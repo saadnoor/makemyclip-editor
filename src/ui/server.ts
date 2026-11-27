@@ -581,6 +581,31 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
    * STRIP_FRAMES stills, cached under the workspace. The timeline shows it as a
    * repeating background, so a whole month costs one small image per clip.
    */
+  /**
+   * GET /api/fonts — the font faces the Cut screen offers for titles, from the
+   * workspace's .fonts/fonts.json; GET /api/fonts/file/:name serves one. Fonts
+   * live in the workspace, not the repo, because their licenses vary.
+   */
+  const fontsDir = () => resolve(getWorkspace(), '.fonts');
+  app.get('/api/fonts', async (c) => {
+    try {
+      return c.json(JSON.parse(await readFile(resolve(fontsDir(), 'fonts.json'), 'utf8')));
+    } catch {
+      return c.json({ faces: [] });
+    }
+  });
+  app.get('/api/fonts/file/:name', async (c) => {
+    const name = c.req.param('name');
+    if (!/^[\w.-]+\.(ttf|otf|woff2?)$/i.test(name)) return c.json({ error: 'Bad font name' }, 400);
+    const path = resolve(fontsDir(), name);
+    if (!existsSync(path)) return c.json({ error: 'No such font' }, 404);
+    const ext = name.split('.').pop()?.toLowerCase();
+    return c.body(await readFile(path), 200, {
+      'Content-Type': ext === 'otf' ? 'font/otf' : ext === 'ttf' ? 'font/ttf' : `font/${ext}`,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+  });
+
   /** GET /api/media/durations — every source's length, so the Cut screen can bound trims. */
   app.get('/api/media/durations', async (c) => {
     const out: Record<string, number> = {};

@@ -122,6 +122,12 @@ describe('invertOp — per-op round-trip (apply then inverse = identity)', () =>
 
   it('setDuration (text clip)', () => {
     expectRoundtrip(richDoc(), { op: 'setDuration', clipId: 't1', durationSec: 6 });
+    expectRoundtrip(richDoc(), { op: 'setText', clipId: 't1', text: 'hello' });
+    expectRoundtrip(richDoc(), {
+      op: 'setText',
+      clipId: 't1',
+      style: { fontFamily: 'EB Garamond', fontWeight: 700, italic: true, fontSize: 96 },
+    });
   });
 
   it('splitClip (media) WITH a following transition', () => {

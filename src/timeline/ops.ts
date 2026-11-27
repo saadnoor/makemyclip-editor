@@ -20,6 +20,7 @@ import {
   type TextClip,
   TextClipSchema,
   type TextStyle,
+  TextStyleSchema,
   type Track,
   TrackSchema,
   type Transform,
@@ -61,6 +62,14 @@ export type CompositionOp =
   | { op: 'moveClip'; clipId: string; startSec?: number; toTrackId?: string }
   | { op: 'setTrim'; clipId: string; sourceInSec?: number; sourceOutSec?: number }
   | { op: 'setDuration'; clipId: string; durationSec: number }
+  | {
+      op: 'setText';
+      clipId: string;
+      text?: string;
+      style?: Partial<TextStyle>;
+      /** Replace the whole style instead of merging (how undo restores it). */
+      replaceStyle?: boolean;
+    }
   | { op: 'splitClip'; clipId: string; atSec: number; newClipId: string }
   | { op: 'silenceCut'; clipId: string; keepRegions: SourceRange[]; newClipIds: string[] }
   | { op: 'addEffect'; clipId: string; effect: Effect; index?: number }
@@ -124,6 +133,13 @@ export const CompositionOpSchema = z.discriminatedUnion('op', [
     sourceOutSec: z.number().optional(),
   }),
   z.object({ op: z.literal('setDuration'), clipId: z.string(), durationSec: z.number() }),
+  z.object({
+    op: z.literal('setText'),
+    clipId: z.string(),
+    text: z.string().min(1).optional(),
+    style: TextStyleSchema.partial().optional(),
+    replaceStyle: z.boolean().optional(),
+  }),
   z.object({
     op: z.literal('splitClip'),
     clipId: z.string(),
@@ -288,6 +304,19 @@ export function applyOp(comp: Composition, op: CompositionOp): Composition {
       }
       if (op.durationSec <= 0) throw new CompositionOpError('durationSec must be positive.');
       clip.durationSec = op.durationSec;
+      break;
+    }
+    case 'setText': {
+      const { clip } = locateClip(draft, op.clipId);
+      if (clip.kind !== 'text') {
+        throw new CompositionOpError(`setText only applies to text clips, not "${clip.kind}".`);
+      }
+      if (op.text !== undefined) clip.text = op.text;
+      if (op.style) {
+        clip.style = TextStyleSchema.parse(
+          op.replaceStyle ? op.style : { ...clip.style, ...op.style },
+        );
+      }
       break;
     }
     case 'splitClip': {
@@ -473,6 +502,18 @@ export function invertOp(comp: Composition, op: CompositionOp): CompositionOp[] 
       const { clip } = locateClip(comp, op.clipId);
       if (clip.kind === 'media') return []; // applyOp will reject.
       return [{ op: 'setDuration', clipId: op.clipId, durationSec: clip.durationSec }];
+    }
+    case 'setText': {
+      const { clip } = locateClip(comp, op.clipId);
+      if (clip.kind !== 'text') return []; // applyOp will reject.
+      return [
+        {
+          op: 'setText',
+          clipId: op.clipId,
+          ...(op.text !== undefined ? { text: clip.text } : {}),
+          ...(op.style ? { style: structuredClone(clip.style), replaceStyle: true } : {}),
+        },
+      ];
     }
     case 'splitClip': {
       const { track, clip } = locateClip(comp, op.clipId);

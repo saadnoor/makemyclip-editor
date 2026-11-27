@@ -117,6 +117,11 @@ export const TextStyleSchema = z.object({
   /** Box color behind the text, or null for none. */
   background: z.string().nullable().default(null),
   anchor: AnchorSchema.default('center'),
+  /** Font family by name (one the workspace's .fonts/fonts.json lists), or absent for the default. */
+  fontFamily: z.string().min(1).optional(),
+  /** CSS weight, 100–900. */
+  fontWeight: z.number().int().min(100).max(900).optional(),
+  italic: z.boolean().optional(),
   /** How far, in pixels, anchored text keeps from the frame edges: `x` from
    *  the left or right edge, `y` from the top or bottom. Absent means 40. */
   margin: z

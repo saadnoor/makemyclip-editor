@@ -106,6 +106,26 @@ const EDITABLE_VERB_SCHEMAS = [
       .optional()
       .describe('Box color behind the text, or null for none.'),
     anchor: AnchorSchema.optional(),
+    fontFamily: z.string().min(1).optional().describe('Font family name, e.g. "EB Garamond".'),
+    fontWeight: z.number().int().min(100).max(900).optional(),
+    italic: z.boolean().optional(),
+  }),
+  z.object({
+    verb: z.literal('edit_text'),
+    clipId: z.string(),
+    text: z.string().min(1).optional(),
+    fontSize: z.number().int().positive().optional(),
+    color: z.string().optional(),
+    background: z.string().nullable().optional(),
+    anchor: AnchorSchema.optional(),
+    fontFamily: z.string().min(1).optional(),
+    fontWeight: z.number().int().min(100).max(900).optional(),
+    italic: z.boolean().optional(),
+  }),
+  z.object({
+    verb: z.literal('set_duration'),
+    clipId: z.string(),
+    durationSec: z.number().positive().describe('New on-screen length of a text or color clip.'),
   }),
   z.object({
     verb: z.literal('add_color'),
@@ -475,6 +495,9 @@ export async function lowerVerb(
       if (verb.color !== undefined) style.color = verb.color;
       if (verb.background !== undefined) style.background = verb.background;
       if (verb.anchor !== undefined) style.anchor = verb.anchor;
+      if (verb.fontFamily !== undefined) style.fontFamily = verb.fontFamily;
+      if (verb.fontWeight !== undefined) style.fontWeight = verb.fontWeight;
+      if (verb.italic !== undefined) style.italic = verb.italic;
       const clip = textClip({
         id: verb.id ?? makeClipId(),
         text: verb.text,
@@ -484,6 +507,21 @@ export async function lowerVerb(
       });
       return [...ensureTrack(comp, trackId), { op: 'addClip', trackId, clip }];
     }
+    case 'edit_text': {
+      const { clipId, verb: _verb, text, ...style } = verb;
+      const hasStyle = Object.keys(style).length > 0;
+      if (text === undefined && !hasStyle) return [];
+      return [
+        {
+          op: 'setText',
+          clipId,
+          ...(text !== undefined ? { text } : {}),
+          ...(hasStyle ? { style } : {}),
+        },
+      ];
+    }
+    case 'set_duration':
+      return [{ op: 'setDuration', clipId: verb.clipId, durationSec: verb.durationSec }];
     case 'add_color': {
       const trackId = verb.track ?? ctx.defaultTrack;
       const clip = colorClip({

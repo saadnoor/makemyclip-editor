@@ -9,6 +9,35 @@ export type Verb =
   | { verb: 'move'; clipId: string; startSec?: number; toTrack?: string }
   | { verb: 'split'; clipId: string; atSec: number }
   | { verb: 'remove'; clipId: string }
+  | {
+      verb: 'add_text';
+      id?: string;
+      text: string;
+      durationSec: number;
+      track?: string;
+      startSec?: number;
+      fontSize?: number;
+      color?: string;
+      background?: string | null;
+      anchor?: string;
+      fontFamily?: string;
+      fontWeight?: number;
+      italic?: boolean;
+    }
+  | {
+      verb: 'edit_text';
+      clipId: string;
+      text?: string;
+      fontSize?: number;
+      color?: string;
+      background?: string | null;
+      anchor?: string;
+      fontFamily?: string;
+      fontWeight?: number;
+      italic?: boolean;
+    }
+  | { verb: 'set_duration'; clipId: string; durationSec: number }
+  | { verb: 'set_transform'; clipId: string; x?: number; y?: number; scale?: number }
   | { verb: 'remove_silence'; clipId: string; sensitivity?: number }
   | { verb: 'cut_words'; clipId: string; fromIndex: number; toIndex: number; transcriptId: string }
   | { verb: 'remove_retakes'; clipId: string; transcriptId?: string }

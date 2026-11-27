@@ -110,6 +110,23 @@ describe('lowerVerb', () => {
     expect(await lowerVerb(withV1, { verb: 'move', clipId: 'c1', toTrack: 'v1' }, ctx())).toEqual([
       { op: 'moveClip', clipId: 'c1', toTrackId: 'v1' },
     ]);
+    expect(
+      await lowerVerb(
+        empty,
+        { verb: 'edit_text', clipId: 't1', text: 'Hi', fontFamily: 'Handscript', fontWeight: 700 },
+        ctx(),
+      ),
+    ).toEqual([
+      {
+        op: 'setText',
+        clipId: 't1',
+        text: 'Hi',
+        style: { fontFamily: 'Handscript', fontWeight: 700 },
+      },
+    ]);
+    expect(
+      await lowerVerb(empty, { verb: 'set_duration', clipId: 't1', durationSec: 4 }, ctx()),
+    ).toEqual([{ op: 'setDuration', clipId: 't1', durationSec: 4 }]);
     expect(await lowerVerb(empty, { verb: 'remove', clipId: 'c1' }, ctx())).toEqual([
       { op: 'removeClip', clipId: 'c1' },
     ]);
