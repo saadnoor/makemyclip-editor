@@ -606,6 +606,84 @@ export async function startUiServer(options: UiServerOptions = {}): Promise<UiSe
     });
   });
 
+  /**
+   * GET /api/progress — how far proxy-making has got, for the progress page:
+   * every month in the overnight plan with clips done/total, what the NAS and
+   * the Mac are encoding right now (their .part files), recent speed, and the
+   * tail of the run's log. Read-only; it only looks at files.
+   */
+  app.get('/api/progress', async (c) => {
+    const ws = getWorkspace();
+    const readText = (p: string) => readFile(p, 'utf8').catch(() => '');
+    const plan = (await readText(resolve(ws, 'overnight-plan.tsv')))
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => {
+        const [month = '', folder = ''] = l.split('\t');
+        return { month, folder };
+      });
+    const now = Date.now();
+    const recent: number[] = [];
+    const months = [];
+    for (const { month, folder } of plan) {
+      const dir = resolve(ws, month);
+      const manifest = await readText(resolve(dir, 'manifest.tsv'));
+      const total = Math.max(0, manifest.split('\n').filter(Boolean).length - 1);
+      const pending = new Set(
+        (await readText(resolve(dir, 'cpu-pending.tsv')))
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => l.split('\t')[0]),
+      );
+      let done = 0;
+      let bytes = 0;
+      let cpuDone = 0;
+      const working: { who: 'nas' | 'mac'; clip: string }[] = [];
+      for (const name of await readdir(dir).catch(() => [] as string[])) {
+        if (name.endsWith('.mp4') && !name.startsWith('.')) {
+          const st = await stat(resolve(dir, name));
+          done++;
+          bytes += st.size;
+          if (pending.has(name)) cpuDone++;
+          if (now - st.mtimeMs < 30 * 60_000) recent.push(st.mtimeMs);
+        } else if (name.endsWith('.part')) {
+          working.push({
+            who: name.includes('.mac.') ? 'mac' : 'nas',
+            clip: name.replace(/^\./, '').replace(/\.(nas|mac)\.part$|\.part$/, ''),
+          });
+        }
+      }
+      months.push({
+        month,
+        folder,
+        total,
+        done,
+        cpuTotal: pending.size,
+        cpuDone,
+        bytes,
+        working,
+        imported: existsSync(resolve(ws, 'timelines', `${month}.json`)),
+      });
+    }
+    const log = (await readText(resolve(ws, 'overnight.log')))
+      .split('\n')
+      .filter((l) => l && !l.includes('libva'));
+    const logStat = await stat(resolve(ws, 'overnight.log')).catch(() => null);
+    const finished = log.some((l) => / finished /.test(l));
+    return c.json({
+      months,
+      clipsPerHour: recent.length * 2,
+      running:
+        !finished &&
+        ((!!logStat && now - logStat.mtimeMs < 20 * 60_000) ||
+          recent.some((t) => now - t < 10 * 60_000) ||
+          months.some((m) => m.working.length > 0)),
+      finished,
+      log: log.slice(-8),
+      at: now,
+    });
+  });
+
   /** GET /api/media/durations — every source's length, so the Cut screen can bound trims. */
   app.get('/api/media/durations', async (c) => {
     const out: Record<string, number> = {};

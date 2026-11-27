@@ -35,6 +35,8 @@ month_of() { # folder name -> 01..12, or nothing
 }
 
 skipped=()
+plan="$WS/overnight-plan.tsv"
+: > "$plan"
 for ((year = FIRST; year <= LAST; year++)); do
   [[ -d "$ARCHIVE/$year" ]] || continue
   declare -A seen=()
@@ -51,16 +53,25 @@ for ((year = FIRST; year <= LAST; year++)); do
     month="$year-$mm"
     if [[ -n "${seen[$month]:-}" ]]; then skipped+=("$year/$name (second folder for $month)"); continue; fi
     seen[$month]=1
-    log "== $month  ←  $year/$name"
-    "$HERE/run-prepare-month.sh" "$ARCHIVE/$year/$name" "$month" 2>&1 | grep -v "libva info" | tail -3
-    if [[ -f "$WS/timelines/$month.json" ]]; then
-      log "   $month already has a timeline — kept as is (proxies topped up only)"
-    else
-      "$HERE/import-month.sh" "$month" 25 2>&1 | tail -1
-    fi
+    printf '%s\t%s\n' "$month" "$year/$name" >> "$plan"
   done <<<"$pairs"
   unset seen
 done
+
+# PLAN_ONLY=1 just writes the plan (the progress page reads it).
+[[ "${PLAN_ONLY:-}" == 1 ]] && exit 0
+
+# Second pass: do the work, in plan order.
+while IFS=$'\t' read -r month rel; do
+    year=${month%%-*}; name=${rel#*/}
+    log "== $month  ←  $year/$name"
+    "$HERE/run-prepare-month.sh" "$ARCHIVE/$year/$name" "$month" < /dev/null 2>&1 | grep -v "libva info" | tail -3
+    if [[ -f "$WS/timelines/$month.json" ]]; then
+      log "   $month already has a timeline — kept as is (proxies topped up only)"
+    else
+      "$HERE/import-month.sh" "$month" 25 < /dev/null 2>&1 | tail -1
+    fi
+done < "$plan"
 
 log "finished $FIRST–$LAST"
 if ((${#skipped[@]})); then
