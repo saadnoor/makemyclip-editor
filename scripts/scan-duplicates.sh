@@ -19,8 +19,11 @@ status scanning "$started" null
 
 # Whole-file hashes (BLAKE3), files of 1 MB and up; the prehash cache makes
 # later scans much faster.
-if docker exec czkawka czkawka_cli dup -d "$INSIDE" -s hash -m 1000000 -u \
-    -C /config/duplicates.json > "$OUT/scan.log" 2>&1; then
+docker exec czkawka czkawka_cli dup -d "$INSIDE" -s hash -m 1000000 -u \
+  -C /config/duplicates.json > "$OUT/scan.log" 2>&1
+code=$?
+# czkawka_cli exits 11 when it found duplicates — that's success too.
+if [[ $code == 0 || $code == 11 ]]; then
   # Map container paths back to NAS paths.
   sed "s#\"$INSIDE#\"$ARCHIVE#g" "$CONFIG/duplicates.json" > "$OUT/result.json.part" &&
     mv "$OUT/result.json.part" "$OUT/result.json"
