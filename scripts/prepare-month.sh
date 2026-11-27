@@ -87,14 +87,23 @@ proxy_cpu() { # in out
 
 # The manifest lists every clip up front, so the 4K conform and the Mac worker
 # can read it while proxies are still being made.
-rm -f "$OUT/cpu-pending.tsv"
+rm -f "$OUT/cpu-pending.tsv" "$OUT/queue.tsv"
 while IFS=$'\t' read -r stamp dur codec pix f; do
   base=$(basename "$f"); base=${base%.*}
   proxy="${stamp}_${base// /_}.mp4"
   printf '%s\t%s\t%s\t%s\n' "$proxy" "$stamp" "$dur" "$f" >> "$MANIFEST"
   # Clips only a CPU can decode are shared with the Mac worker (mac-proxy-worker.sh).
   can_qsv "$codec" "$pix" || printf '%s\t%s\n' "$proxy" "$f" >> "$OUT/cpu-pending.tsv"
+  # Every clip, for the Mac worker to help with in parallel: proxy, original, gpu|cpu.
+  kind=cpu; can_qsv "$codec" "$pix" && kind=gpu
+  printf '%s\t%s\t%s\n' "$proxy" "$f" "$kind" >> "$OUT/queue.tsv"
 done < "$LIST"
+
+# SCAN_ONLY=1: just list the month (manifest + queues) so helpers can start on it.
+if [[ "${SCAN_ONLY:-}" == 1 ]]; then
+  log "scanned $MONTH: $total clips"
+  exit 0
+fi
 
 # A clip is claimed by creating .claims/<proxy> (mkdir is atomic). A claim older
 # than CLAIM_TTL minutes is from a worker that died, and is taken over.

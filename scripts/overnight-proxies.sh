@@ -61,6 +61,14 @@ done
 # PLAN_ONLY=1 just writes the plan (the progress page reads it).
 [[ "${PLAN_ONLY:-}" == 1 ]] && exit 0
 
+# Scan every month first (headers only, minutes) so the Mac worker can help with
+# any month in parallel, not just the one the NAS is on.
+while IFS=$'\t' read -r month rel; do
+  [[ -f "$WS/$month/queue.tsv" ]] && continue
+  log "scanning $month"
+  SCAN_ONLY=1 "$HERE/run-prepare-month.sh" "$ARCHIVE/$rel" "$month" < /dev/null 2>&1 | grep -v "libva info" | tail -1
+done < "$plan"
+
 # Second pass: do the work, in plan order.
 while IFS=$'\t' read -r month rel; do
     year=${month%%-*}; name=${rel#*/}
@@ -71,7 +79,11 @@ while IFS=$'\t' read -r month rel; do
     else
       "$HERE/import-month.sh" "$month" 25 < /dev/null 2>&1 | tail -1
     fi
+    # Mirror into ~/Proxies/<archive structure> (hard links, no extra space).
+    "$HERE/link-proxies.sh" "$month" < /dev/null
 done < "$plan"
+# Catch proxies the Mac finished after their month's pass.
+"$HERE/link-proxies.sh" < /dev/null
 
 log "finished $FIRST–$LAST"
 if ((${#skipped[@]})); then

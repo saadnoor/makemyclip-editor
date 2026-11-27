@@ -14,7 +14,7 @@ RENDER_GID=$(stat -c %g /dev/dri/renderD128)
 exec docker run --rm --name "prepare-$MONTH" \
   --device /dev/dri:/dev/dri \
   --user "$(id -u):$(id -g)" --group-add "$RENDER_GID" \
-  -e MAKEMYCLIP_WORKSPACE="$WS" -e LIBVA_MESSAGING_LEVEL=1 \
+  -e MAKEMYCLIP_WORKSPACE="$WS" -e LIBVA_MESSAGING_LEVEL=1 -e SCAN_ONLY="${SCAN_ONLY:-}" \
   -e PATH=/usr/lib/jellyfin-ffmpeg:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   -v "$SRC":"$SRC":ro \
   -v "$WS":"$WS" \
